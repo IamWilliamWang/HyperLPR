@@ -18,7 +18,7 @@ def SpeedTest(image_path):
     print("Image size :" + str(grr.shape[1]) + "x" + str(grr.shape[0]) + " need " + str(round(t * 1000, 2)) + "ms")
 
 
-from testVideos import ImageUtil
+from testVideos import ImageUtil, VideoUtil
 from PIL import ImageFont
 from PIL import Image
 from PIL import ImageDraw
@@ -43,182 +43,6 @@ import cv2
 import numpy as np
 
 
-class ImageUtil:
-    @staticmethod
-    def Imread(filename_unicode: str) -> np.ndarray:
-        """
-        读取可能含有unicode文件名的图片
-        :param filename_unicode: 可能含有unicode的图片名
-        :return: 图片帧
-        """
-        return cv2.imdecode(np.fromfile(filename_unicode, dtype=np.uint8), -1)
-
-    @staticmethod
-    def Imwrite(filename_unicode: str, frame) -> None:
-        """
-        向文件写入该帧
-        :param filename_unicode: 可能含有unicode的图片名
-        :param frame: 要写入的帧
-        """
-        extension = filename_unicode[filename_unicode.rfind('.'):]
-        cv2.imencode(extension, frame)[1].tofile(filename_unicode)
-
-    @staticmethod
-    def IsGrayImage(grayOrImg) -> bool:
-        """
-        检测是否为灰度图，灰度图为True，彩图为False
-        :param grayOrImg: 图片帧
-        :return: 是否为灰度图
-        """
-        return len(grayOrImg.shape) is 2
-
-
-class VideoUtil:
-    @staticmethod
-    def OpenVideos(inputVideoSource=None, outputVideoFilename=None, outputVideoEncoding='DIVX') -> tuple(
-        [cv2.VideoCapture, cv2.VideoWriter]):  # MPEG-4编码
-        """
-        打开读取和输出视频文件
-        :param inputVideoSource: 输入文件名或视频流
-        :param outputVideoFilename: 输出文件名或视频流
-        :param outputVideoEncoding: 输出文件的视频编码
-        :return: 输入输出文件流
-        """
-        videoInput = None
-        videoOutput = None
-        if inputVideoSource is not None:
-            videoInput = VideoUtil.OpenInputVideo(inputVideoSource)  # 打开输入视频文件
-        if outputVideoFilename is not None:
-            videoOutput = VideoUtil.OpenOutputVideo(outputVideoFilename, videoInput, outputVideoEncoding)
-        return videoInput, videoOutput
-
-    @staticmethod
-    def OpenInputVideo(inputVideoSource: str) -> cv2.VideoCapture:
-        """
-        打开要读取的视频文件
-        :param inputVideoSource: 输入文件名或视频流
-        :return: 可读取的文件流
-        """
-        return cv2.VideoCapture(inputVideoSource)
-
-    @staticmethod
-    def OpenOutputVideo(outputVideoFilename: str, inputFileStream: cv2.VideoCapture,
-                        outputVideoEncoding='DIVX') -> cv2.VideoWriter:
-        """
-        打开输出视频文件
-        :param outputVideoFilename: 输出文件名
-        :param inputFileStream: 输入文件流（用户获得视频基本信息）
-        :param outputVideoEncoding: 输出文件编码
-        :return: 输出文件流
-        """
-        # 获得码率及尺寸
-        fps = int(inputFileStream.get(cv2.CAP_PROP_FPS))
-        size = (int(inputFileStream.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                int(inputFileStream.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-        # return cv2.VideoWriter(outputVideoFilename, cv2.VideoWriter_fourcc(*outputVideoEncoding), fps, size, False)
-        return cv2.VideoWriter(outputVideoFilename, 0x00000021, fps, size, False)
-
-    @staticmethod
-    def ReadFrames(stream: cv2.VideoCapture, readFramesCount: int) -> list:
-        """
-        从输入流中读取最多readFramesCount个帧并返回，如果没有读取则返回[]
-        :param stream: 输入流
-        :param readFramesCount: 要读取的帧数
-        :return: 读取的帧列表
-        """
-        frames = []
-        while stream.isOpened():
-            ret, frame = stream.read()
-            if ret is False:
-                break
-            frames += [frame]
-            if len(frames) >= readFramesCount:
-                break
-        return frames
-
-    @staticmethod
-    def ReadFrame(stream: cv2.VideoCapture) -> np.ndarray:
-        """
-        从输入流中读取一帧，如果没有读取则返回[]
-        :param stream: 可读取的输入流
-        :return: 读取的一帧
-        """
-        read = VideoUtil.ReadFrames(stream, 1)
-        return np.asarray(read[0]) if read else []
-
-    @staticmethod
-    def WriteFrame(stream: cv2.VideoWriter, frame: np.ndarray) -> None:
-        """
-        向输出流写入一帧
-        :param stream: 可进行写入的视频输出流
-        :param frame: 要写的一帧
-        """
-        stream.write(frame)
-
-    @staticmethod
-    def GetPosition(stream: cv2.VideoCapture) -> int:
-        """
-        获得视频输入流指向的当前帧位置
-        :param stream: 可读取的视频输入流
-        :return: 当前指向的位置
-        """
-        return stream.get(cv2.CAP_PROP_POS_FRAMES)
-
-    @staticmethod
-    def SetPosition(stream: cv2.VideoCapture, framesPosition: int) -> None:
-        """
-        设定视频输入流指向的当前帧位置
-        :param stream: 可读取的视频输入流
-        :param framesPosition: 要指向的位置
-        """
-        stream.set(cv2.CAP_PROP_POS_FRAMES, framesPosition)
-
-    @staticmethod
-    def SkipReadFrames(stream: cv2.VideoCapture, skippedFramesCount: int) -> None:
-        """
-        视频输入流指向的帧位置跳过多少帧。等价于SetPosition(GetPosition+skippedFramesCount)
-        :param stream: 可读取的视频输入流
-        :param skippedFramesCount: 想要跳过多少帧
-        """
-        VideoUtil.SetPosition(stream, VideoUtil.GetPosition(stream) + skippedFramesCount)
-
-    @staticmethod
-    def GetFps(videoStream: cv2.VideoCapture) -> int:
-        """
-        获得视频流的FPS
-        :param videoStream: 可读取的视频输入流
-        :return: 每秒多少帧
-        """
-        return int(videoStream.get(cv2.CAP_PROP_FPS))
-
-    @staticmethod
-    def GetVideoFileFrameCount(videoFileStream: cv2.VideoCapture) -> int:
-        """
-        获得视频文件的总帧数
-        :param videoFileStream: 可读取的视频输入流
-        :return: 视频文件的总帧数
-        """
-        return videoFileStream.get(cv2.CAP_PROP_FRAME_COUNT)
-
-    @staticmethod
-    def GetWidthAndHeight(videoStream: cv2.VideoCapture) -> tuple([int, int]):
-        """
-        获得视频流的宽度和高度
-        :param videoStream: 可读取的视频输入流
-        :return: 视频流的宽度和高度
-        """
-        return int(videoStream.get(cv2.CAP_PROP_FRAME_WIDTH)), int(videoStream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    @staticmethod
-    def CloseVideos(*videoStreams) -> None:
-        """
-        关闭所有视频文件
-        :param videoStreams: 所有可读取的视频输入流
-        """
-        for videoStream in videoStreams:
-            videoStream.release()
-
-
 def editDistance(word1: str, word2: str) -> int:
     rows = len(word1) + 1
     cols = len(word2) + 1
@@ -238,7 +62,7 @@ def editDistance(word1: str, word2: str) -> int:
     return int(distanceMatrix[len(word1)][len(word2)])
 
 
-def detect(originImg: np.ndarray, frameIndex = -1) -> np.ndarray:
+def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     def analyzePlate(plateStr: str, confidence: float) -> (str, float):
         global vehiclePlates, vehiclePlatesConfidence, vehiclePlatesStartAt, vehiclePlatesEndAt
         if vehiclePlates == [] or editDistance(vehiclePlates[-1], plateStr) > 3:  # new vehicle
@@ -249,27 +73,30 @@ def detect(originImg: np.ndarray, frameIndex = -1) -> np.ndarray:
         if confidence > vehiclePlatesConfidence[-1]:  # this plate can be better
             vehiclePlates[-1] = plateStr
             vehiclePlatesConfidence[-1] = confidence
-            if len(vehiclePlatesEndAt) == len(vehiclePlatesStartAt) - 1:
+            if len(vehiclePlatesEndAt) <= len(vehiclePlatesStartAt) - 1:
                 vehiclePlatesEndAt += [frameIndex]
             else:
                 vehiclePlatesEndAt[-1] = frameIndex
             return plateStr, confidence
         else:  # saved plate can be better
-            if len(vehiclePlatesEndAt) == len(vehiclePlatesStartAt) - 1:
+            if len(vehiclePlatesEndAt) <= len(vehiclePlatesStartAt) - 1:
                 vehiclePlatesEndAt += [frameIndex]
             else:
                 vehiclePlatesEndAt[-1] = frameIndex
             return vehiclePlates[-1], vehiclePlatesConfidence[-1]
+
     image = None
-    for plateStr, confidence, rect in model.SimpleRecognizePlateByE2E(originImg):
+    detections = model.SimpleRecognizePlateByE2E(originImg)
+    for plateStr, confidence, rect in sorted(detections, key=lambda detectionList: detectionList[1]):
         if confidence > 0.8:
             plateStr, confidence = analyzePlate(plateStr, confidence)
             image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)))
             print("plate_str: %s, confidence: %f" % (plateStr, confidence))
+        break  # 每帧只处理最有可能的车牌号
     return image if image is not None else originImg
 
 
-def detectShow(arg, frameIndex = -1):
+def detectShow(arg, frameIndex=-1):
     image = ImageUtil.Imread(arg)
     detect(image, frameIndex)
     cv2.imshow("image", image)
@@ -288,10 +115,10 @@ def demoPhotos():
 
 def demoVideo(showDetection=False):
     inStream = VideoUtil.OpenInputVideo(r"E:\项目\车牌检测\所有录像\Record20200422-1_clip.mp4")
-    outStream = VideoUtil.OpenOutputVideo('20200422.mp4', inStream)
+    outStream = VideoUtil.OpenOutputVideo('20200422_2.mp4', inStream)
     frameIndex = 0
     frameLimit = VideoUtil.GetVideoFileFrameCount(inStream)
-    frameLimit = 100 if frameLimit > 100 else frameLimit
+    frameLimit = 10000 if frameLimit > 10000 else frameLimit
     fps = VideoUtil.GetFps(inStream)
     while True:
         frame = VideoUtil.ReadFrame(inStream)
@@ -308,14 +135,23 @@ def demoVideo(showDetection=False):
         cv2.destroyAllWindows()
     VideoUtil.CloseVideos(inStream, outStream)
     # 写日志
-    with open('20200422.txt', 'a') as fpLog:
+    with open('20200422_2.txt', 'a') as fpLog:
         print('以下是检测到的车牌号：')
         for i in range(len(vehiclePlates)):
-            print(vehiclePlates[i], vehiclePlatesConfidence[i])
-            if vehiclePlatesStartAt[i] != -1:
-                fpLog.write('%s %.3f [%.2f-%.2f秒]\n' % (vehiclePlates[i], vehiclePlatesConfidence[i], vehiclePlatesStartAt[i]/fps, vehiclePlatesEndAt[i]/fps))
-            else:
-                fpLog.write('%s %.3f\n' % (vehiclePlates[i], vehiclePlatesConfidence[i]))
+            try:
+                print(vehiclePlates[i], vehiclePlatesConfidence[i],
+                      '(%.2f - %.2f)' % (vehiclePlatesStartAt[i], vehiclePlatesEndAt[i]))
+                if vehiclePlatesStartAt[i] != -1:
+                    fpLog.write('%s %.3f [%.2f-%.2f秒]\n' % (
+                    vehiclePlates[i], vehiclePlatesConfidence[i], vehiclePlatesStartAt[i] / fps,
+                    vehiclePlatesEndAt[i] / fps))
+                else:
+                    fpLog.write('%s %.3f\n' % (vehiclePlates[i], vehiclePlatesConfidence[i]))
+            except:  # 如果start和end数组长度不一样，跳出
+                print(
+                    '写入结果无法继续。当前的变量：vehiclePlates={}\nvehiclePlatesConfidence={}\nvehiclePlatesStartAt={}\nvehiclePlatesEndAt={}'.format(
+                        vehiclePlates, vehiclePlatesConfidence, vehiclePlatesStartAt, vehiclePlatesEndAt))
+                break
 
 
 if __name__ == '__main__':
