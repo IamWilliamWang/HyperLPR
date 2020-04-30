@@ -133,9 +133,9 @@ class Tractor:
         for i in range(len(self._movingPlates) - 1, -1, -1):
             savedPlate = self._movingPlates[i]  # 保存的车牌
             editDistance = self.editDistance(savedPlate.plateStr, nowPlateTuple.str)
-            if editDistance < 2:  # 编辑距离低于阈值，不比较方框位置
+            if editDistance < 4:  # 编辑距离低于阈值，不比较方框位置
                 yield savedPlate
-            elif editDistance < 4:  # 编辑距离适中，比较方框的位置有没有重合
+            elif editDistance < 5:  # 编辑距离适中，比较方框的位置有没有重合
                 rect1 = [savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom]
                 rect2 = [nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top, nowPlateTuple.bottom]
                 if computeIntersect(rect1, rect2) != 0:
@@ -148,12 +148,25 @@ class Tractor:
         :param nowTime: 当前时间
         :return: 最大可能的车牌号和置信度
         """
-        # 跳过分析的条件：
-        if len(nowPlateTuple.str) < 7:  # 车牌太短
+        import re
+        # 预处理车牌部分：
+        # 跳过条件：车牌字符串太短
+        if len(nowPlateTuple.str) < 7:
             return nowPlateTuple.str, nowPlateTuple.confidence
-        if 'A' <= nowPlateTuple.str[0] <= 'Z' and nowPlateTuple.str[0] != 'S':  # 第一个如果是英文必须是S
+        # 跳过条件：以英文字母开头（S和X除外）
+        if 'A' <= nowPlateTuple.str[0] <= 'R' or 'T' <= nowPlateTuple.str[0] <= 'W' or 'Y' <= nowPlateTuple.str[0] <= 'Z':
             return nowPlateTuple.str, nowPlateTuple.confidence
-        # 在储存的里找相似的车牌号
+        # 符合特殊车牌条件，修改其车牌号
+        specialPlateReMatch = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
+        if specialPlateReMatch:
+            plateStr = ''
+            for i in range(1, 4):
+                plateStr += specialPlateReMatch.group(i)
+            tmp = list(nowPlateTuple)
+            tmp[0] = plateStr
+            nowPlateTuple = self.VehiclePlate(*tmp)
+
+        # 开始分析：在储存的里找相似的车牌号
         similarPlates = list(self._getSimilarSavedPlates(nowPlateTuple))
         if not similarPlates:  # 找不到相似的车牌号，插入新的
             initPlateList = list(nowPlateTuple) + [nowTime] * 2  # 初始化列表
@@ -162,40 +175,52 @@ class Tractor:
         self._killMovingPlates(nowTime)  # 将寿命过长的车牌杀掉
         savedPlate = sorted(similarPlates, key=lambda plate: plate.confidence, reverse=True)[0]  # 按照置信度排序，取最高的
         if savedPlate.confidence < nowPlateTuple.confidence:  # 储存的置信度较低，保存当前的
-            savedPlate.plateStr = nowPlateTuple.str
-            savedPlate.confidence = nowPlateTuple.confidence
-            savedPlate.left = nowPlateTuple.left
-            savedPlate.right = nowPlateTuple.right
-            savedPlate.top = nowPlateTuple.top
-            savedPlate.bottom = nowPlateTuple.bottom
-            savedPlate.width = nowPlateTuple.width
-            savedPlate.height = nowPlateTuple.height
-            savedPlate.endTime = nowTime
+            savedPlate.plateStr, savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top,\
+                savedPlate.bottom, savedPlate.width, savedPlate.height, savedPlate.endTime = \
+                nowPlateTuple.str, nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top,\
+                nowPlateTuple.bottom, nowPlateTuple.width, nowPlateTuple.height, nowTime
             return nowPlateTuple.str, nowPlateTuple.confidence
         else:  # 储存的置信度高
             savedPlate.endTime = nowTime
             return savedPlate.plateStr, savedPlate.confidence
 
-    def _purgeAll(self) -> None:
+    def _mergeSamePlates(self) -> None:
         """
-        清洗结果。去除所有出现过短的
+        相同车牌结果合并到一起
         :return:
         """
-        self._deadPlates = sorted(self._deadPlates, key=lambda plate: plate.startTime)
-        self._movingPlates = sorted(self._movingPlates, key=lambda plate: plate.startTime)
-        for plate in self._deadPlates:
-            if plate.endTime - plate.startTime <= 3:
-                self._deadPlates.remove(plate)
-        for plate in self._movingPlates:
-            if plate.endTime - plate.startTime <= 3:
-                self._movingPlates.remove(plate)
+        def purgeAndMerge(plateList: List[Tractor.Plate]) -> List[Tractor.Plate]:
+            if len(plateList) < 2:
+                return plateList
+
+            plateList = sorted(plateList, key=lambda plate: plate.startTime)  # 按照出现时间进行排序，相同的车牌会相邻
+            # 除掉存在时间极短的车牌
+            # for plate in plateList:
+            #     if plate.endTime - plate.startTime <= 3:
+            #         plateList.remove(plate)
+            # 合并相邻的相似车牌
+            for i in range(len(plateList) - 1, 0, -1):
+                this, previous = plateList[i], plateList[i-1]
+                if self.editDistance(this.plateStr, previous.plateStr) < 4:  # 合并相邻的编辑距离较小的车牌号
+                    endTime = max(this.endTime, previous.endTime)
+                    if this.confidence > previous.confidence:
+                        this.startTime = previous.startTime
+                        this.endTime = endTime
+                        plateList[i], plateList[i-1] = plateList[i-1], plateList[i]
+                    else:
+                        previous.endTime = endTime
+                    del plateList[i]
+            return plateList
+
+        self._deadPlates = purgeAndMerge(self._deadPlates)
+        self._movingPlates = purgeAndMerge(self._movingPlates)
 
     def getAll(self) -> List[Plate]:
         """
-        清理并获得所有的车牌List
+        后期处理后返回所有的车牌List
         :return:
         """
-        self._purgeAll()
+        self._mergeSamePlates()
         return self._deadPlates + self._movingPlates
 
     # 下面都是Util
@@ -230,7 +255,7 @@ class Tractor:
                 else:
                     distanceMatrix[i][j] = min(1 + distanceMatrix[i - 1][j], 1 + distanceMatrix[i][j - 1],
                                                1 + distanceMatrix[i - 1][j - 1])
-        print('%s to %s=%d' % (word1, word2, int(distanceMatrix[len(word1)][len(word2)])))
+        # print('Edit distance from %s to %s = %d' % (word1, word2, int(distanceMatrix[len(word1)][len(word2)])))
         return int(distanceMatrix[len(word1)][len(word2)])
 
 
@@ -243,11 +268,11 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     """
     image = None
     for plateStr, confidence, rect in model.SimpleRecognizePlateByE2E(originImg):
-        if confidence > 0.8:
+        if confidence > 0.85:
             vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
             plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
             image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)))
-            print("plate_str: %s, confidence: %.5f" % (plateStr, confidence))
+            print("%s (%.5f)" % (plateStr, confidence))
         break  # 每帧只处理最有可能的车牌号
     return image if image is not None else originImg
 
@@ -275,7 +300,7 @@ def demoPhotos():
         detectShow(ImageUtil.Imread(os.path.join(dir, file)))
 
 
-def demoVideo(args, showDetection=False):
+def demoVideo(args, showDetection=True):
     """
     测试视频
     :param args:
@@ -286,10 +311,10 @@ def demoVideo(args, showDetection=False):
     outStream = VideoUtil.OpenOutputVideo(inStream, args.output)
     frameIndex = 0
     frameLimit = VideoUtil.GetVideoFramesCount(inStream)
-    # frameLimit = 1000 if frameLimit > 1000 else frameLimit
+    frameLimit = 10000 if frameLimit > 10000 else frameLimit
     fps: int = VideoUtil.GetFps(inStream)
     global tracker
-    tracker = Tractor(fps)
+    tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
     while True:
         frame = VideoUtil.ReadFrame(inStream)
         if frame.shape[0] == 0 or frameIndex > frameLimit:
@@ -309,7 +334,7 @@ def demoVideo(args, showDetection=False):
         print('以下是检测到的车牌号：')
         allResult = tracker.getAll()
         for resultPlate in allResult:
-            if resultPlate.startTime / fps // 60 < 3:
+            if resultPlate.startTime / fps // 60 < 2:
                 line = '%s %.3f [%.2f-%.2f秒]' % (resultPlate.plateStr, resultPlate.confidence, resultPlate.startTime/fps, resultPlate.endTime/fps)
             else:
                 seconds1, seconds2 = resultPlate.startTime / fps, resultPlate.endTime / fps
