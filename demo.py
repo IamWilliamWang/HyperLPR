@@ -52,6 +52,7 @@ import HyperLPRLite as pr
 import cv2
 import numpy as np
 import re
+import pickle
 
 
 from typing import List, Iterator
@@ -310,7 +311,10 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     :return:
     """
     image = None
-    for plateStr, confidence, rect in model.SimpleRecognizePlateByE2E(originImg):
+    resultList = model.SimpleRecognizePlateByE2E(originImg) if args.load_binary is None else binary.popLoaded()
+    if args.save_binary is not None:
+        binary.append(resultList)
+    for plateStr, confidence, rect in resultList:
         if confidence > 0.85:
             vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
             plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
@@ -343,7 +347,7 @@ def demoPhotos():
         detectShow(ImageUtil.Imread(os.path.join(dir, file)))
 
 
-def demoVideo(args, showDetection=True):
+def demoVideo(showDetection=True):
     """
     测试视频
     :param args:
@@ -351,11 +355,13 @@ def demoVideo(args, showDetection=True):
     :return:
     """
     inStream = VideoUtil.OpenInputVideo(args.video)
-    outStream = VideoUtil.OpenOutputVideo(inStream, args.output)
+    outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
     frameIndex = 0
     frameLimit = VideoUtil.GetVideoFramesCount(inStream)
-    frameLimit = 10000 if frameLimit > 10000 else frameLimit
     fps: int = VideoUtil.GetFps(inStream)
+    if args.load_binary:
+        binary.load(args.load_binary)
+    frameLimit = 10000 if frameLimit > 10000 else frameLimit
     global tracker
     tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
     while True:
@@ -365,12 +371,15 @@ def demoVideo(args, showDetection=True):
         frameDrawed = detectShow(frame, frameIndex) if showDetection else detect(frame, frameIndex)
         if frameDrawed.shape[0] == 0:
             break
-        VideoUtil.WriteFrame(outStream, frameDrawed)
+        if args.output is not None:
+            VideoUtil.WriteFrame(outStream, frameDrawed)
         frameIndex += 1
         print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
     if showDetection:
         cv2.destroyAllWindows()
     VideoUtil.CloseVideos(inStream, outStream)
+    if args.save_binary is not None:
+        binary.save(args.save_binary)
     # 写日志
     import os
     with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt', 'a') as fpLog:
@@ -386,11 +395,40 @@ def demoVideo(args, showDetection=True):
             fpLog.write(line + '\n')
 
 
+class Serialization:
+    def __init__(self):
+        self._database = []
+
+    def append(self, obj):
+        self._database += [obj]
+
+    def save(self, binFilename: str):
+        with open(binFilename, 'wb') as f:
+            pickle.dump(self._database, f)
+
+    def load(self, binFilename: str):
+        with open(binFilename, 'rb') as f:
+            self._database = pickle.load(f)
+            self._pointer = 0
+        return self._database
+
+    def popLoaded(self):
+        self._pointer += 1
+        if self._pointer >= len(self._database):
+            return []
+        return self._database[self._pointer - 1]  # [pointer++]
+
+
 if __name__ == '__main__':
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     tracker = None
+    binary = Serialization()
+
     import argparse
     parser = argparse.ArgumentParser(description='车牌识别程序')
-    parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
+    parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名')
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
-    demoVideo(parser.parse_args())
+    parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
+    parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
+    args = parser.parse_args()
+    demoVideo()
