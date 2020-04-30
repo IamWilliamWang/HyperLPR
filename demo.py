@@ -51,6 +51,7 @@ def drawRectBox(image, rect, addText):
 import HyperLPRLite as pr
 import cv2
 import numpy as np
+import re
 
 
 from typing import List, Iterator
@@ -84,7 +85,7 @@ class Tractor:
             return "Plate{str='%s', confidence=%f, left=%f, right=%f, top=%f, bottom=%f, width=%f, height=%f, startTime=%d, endTime=%d}" % \
                    (self.plateStr, self.confidence, self.left, self.right, self.top, self.bottom, self.width, self.height, self.startTime, self.endTime)
 
-    def __init__(self, lifeTimeLimit=24):
+    def __init__(self, lifeTimeLimit=48):
         """
         初始化追踪器
         :param lifeTimeLimit: 车牌消失多久就算离开屏幕（越大越准确，但是计算越慢）
@@ -105,7 +106,7 @@ class Tractor:
                 self._deadPlates.append(plate)
                 self._movingPlates.remove(plate)
 
-    def _getSimilarSavedPlates(self, nowPlateTuple: namedtuple) -> Iterator[Plate]:
+    def _getSimilarSavedPlates(self, nowPlateTuple: namedtuple, nowTime: int) -> Iterator[Plate]:
         """
         根据当前的车牌获取movingPlate中相似的车牌
         :param nowPlateTuple: 当前的车牌tuple，类型是self.VehiclePlate
@@ -133,7 +134,7 @@ class Tractor:
         for i in range(len(self._movingPlates) - 1, -1, -1):
             savedPlate = self._movingPlates[i]  # 保存的车牌
             editDistance = self.editDistance(savedPlate.plateStr, nowPlateTuple.str)
-            if editDistance < 4:  # 编辑距离低于阈值，不比较方框位置
+            if editDistance < 4 and nowTime - savedPlate.endTime < self._lifeTimeLimit // 2:  # 编辑距离低于阈值，不比较方框位置
                 yield savedPlate
             elif editDistance < 5:  # 编辑距离适中，比较方框的位置有没有重合
                 rect1 = [savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom]
@@ -148,7 +149,40 @@ class Tractor:
         :param nowTime: 当前时间
         :return: 最大可能的车牌号和置信度
         """
-        import re
+        def safeAssignment(beAssignedPlate: str, assignPlate: str) -> str:
+            """
+            禁止高优先级的车牌前缀被赋值成低优先级车牌前缀的赋值函数。用于代替 plate被赋值=plate赋值 语句
+            :param beAssignedPlate: 要被赋值的车牌号
+            :param assignPlate: 赋值的车牌号
+            :return: 真正被赋值成什么车牌号
+            """
+            specialPrefixes = ['厂内', 'SG', 'XL']  # 特殊车牌一律最大优先级。如果有单次出现特殊车牌后一定要固定住特殊前缀
+            prefixes = ['粤', '湘', '豫', '川', '冀', '贵', '苏', '赣', '甘', '陕', '沪', '鲁', '黑', '辽', '皖', '鄂', '浙', '宁', '琼',
+                        '闽', '蒙', '渝', '吉', '桂', '京', '新', '云']  # 根据大数据统计得出的车牌出现的频率从高到低（川、豫除外）
+            finalPrefixes, finalOthers = '', ''
+            # 一共分为四类讨论。特-特、特-非特、非特-特、非特-非特
+            if beAssignedPlate[:2] in specialPrefixes:  # 第一个为特殊车牌，则固定第一个的特殊前缀
+                finalPrefixes = beAssignedPlate[:2]
+                if assignPlate[:2] in specialPrefixes:  # 车牌的其余部分是第二个的剩余部分
+                    finalOthers = assignPlate[2:]
+                else:
+                    finalOthers = assignPlate[1:]
+            else:  # 第一个不是特殊车牌
+                if assignPlate[:2] in specialPrefixes:  # 第二个是特殊车牌
+                    finalPrefixes = assignPlate[:2]
+                    finalOthers = assignPlate[2:]
+                else:
+                    priority1 = len(prefixes) - prefixes.index(beAssignedPlate[0]) if beAssignedPlate[0] in prefixes else -1
+                    priority2 = len(prefixes) - prefixes.index(assignPlate[0]) if assignPlate[0] in prefixes else -1
+                    if priority1 <= priority2:
+                        finalPrefixes = assignPlate[0]
+                        finalOthers = assignPlate[1:]
+                    else:
+                        finalPrefixes = beAssignedPlate[0]
+                        finalOthers = assignPlate[1:]
+            # 如果是特殊车牌，经常出现重叠字母的情况
+            return finalPrefixes + finalOthers if finalPrefixes[-1] != finalOthers[0] else finalPrefixes + finalOthers[1:]
+
         # 预处理车牌部分：
         # 跳过条件：车牌字符串太短
         if len(nowPlateTuple.str) < 7:
@@ -156,31 +190,38 @@ class Tractor:
         # 跳过条件：以英文字母开头（S和X除外）
         if 'A' <= nowPlateTuple.str[0] <= 'R' or 'T' <= nowPlateTuple.str[0] <= 'W' or 'Y' <= nowPlateTuple.str[0] <= 'Z':
             return nowPlateTuple.str, nowPlateTuple.confidence
-        # 符合特殊车牌条件，修改其车牌号
+        # 符合特殊车牌条件，修改其车牌号以符合特殊车牌的正常结构
         specialPlateReMatch = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
         if specialPlateReMatch:
             plateStr = ''
-            for i in range(1, 4):
+            for i in range(1, 4):  # 把三个括号里的拿出来拼接就是车牌号
                 plateStr += specialPlateReMatch.group(i)
             tmp = list(nowPlateTuple)
             tmp[0] = plateStr
             nowPlateTuple = self.VehiclePlate(*tmp)
 
         # 开始分析：在储存的里找相似的车牌号
-        similarPlates = list(self._getSimilarSavedPlates(nowPlateTuple))
+        similarPlates = list(self._getSimilarSavedPlates(nowPlateTuple, nowTime))
         if not similarPlates:  # 找不到相似的车牌号，插入新的
             initPlateList = list(nowPlateTuple) + [nowTime] * 2  # 初始化列表
+            # （取巧部分）统计显示 95.9% 的概率成立
+            if initPlateList[0][1] == 'F':
+                initPlateList[0] = '粤' + initPlateList[0][1:]
             self._movingPlates.append(Tractor.Plate(*initPlateList))
-            return nowPlateTuple.str, nowPlateTuple.confidence
+            return self._movingPlates[-1].plateStr, nowPlateTuple.confidence
+        # 如果有相似的车牌
         self._killMovingPlates(nowTime)  # 将寿命过长的车牌杀掉
         savedPlate = sorted(similarPlates, key=lambda plate: plate.confidence, reverse=True)[0]  # 按照置信度排序，取最高的
         if savedPlate.confidence < nowPlateTuple.confidence:  # 储存的置信度较低，保存当前的
-            savedPlate.plateStr, savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top,\
-                savedPlate.bottom, savedPlate.width, savedPlate.height, savedPlate.endTime = \
-                nowPlateTuple.str, nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top,\
+            # （取巧部分）在高置信度向低置信度进行赋值时。禁止将低频度的前缀赋给高频度的前缀
+            savedPlate.plateStr = safeAssignment(savedPlate.plateStr, nowPlateTuple.str)
+            # 剩余的属性进行赋值，并记录更新endTime
+            savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom,\
+                savedPlate.width, savedPlate.height, savedPlate.endTime = \
+                nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top,\
                 nowPlateTuple.bottom, nowPlateTuple.width, nowPlateTuple.height, nowTime
             return nowPlateTuple.str, nowPlateTuple.confidence
-        else:  # 储存的置信度高
+        else:  # 储存的置信度高，只更新endTime
             savedPlate.endTime = nowTime
             return savedPlate.plateStr, savedPlate.confidence
 
@@ -201,7 +242,7 @@ class Tractor:
             # 合并相邻的相似车牌
             for i in range(len(plateList) - 1, 0, -1):
                 this, previous = plateList[i], plateList[i-1]
-                if self.editDistance(this.plateStr, previous.plateStr) < 4:  # 合并相邻的编辑距离较小的车牌号
+                if self.editDistance(this.plateStr, previous.plateStr) < 4 and this.startTime <= previous.endTime:  # 合并相邻的编辑距离较小的车牌号
                     endTime = max(this.endTime, previous.endTime)
                     if this.confidence > previous.confidence:
                         this.startTime = previous.startTime
@@ -220,7 +261,9 @@ class Tractor:
         后期处理后返回所有的车牌List
         :return:
         """
+        print('整理数据：大小从 %d ' % (len(self._deadPlates) + len(self._movingPlates)), end='')
         self._mergeSamePlates()
+        print('到 %d' % (len(self._deadPlates) + len(self._movingPlates)))
         return self._deadPlates + self._movingPlates
 
     # 下面都是Util
