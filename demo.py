@@ -316,15 +316,17 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
         binary.append(resultList)
     for plateStr, confidence, rect in resultList:
         if confidence > 0.85:
-            vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
-            plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
+            if args.video:
+                vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
+                plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
+
             image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)))
             print("%s (%.5f)" % (plateStr, confidence))
         break  # 每帧只处理最有可能的车牌号
     return image if image is not None else originImg
 
 
-def detectShow(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
+def detectShow(originImg: np.ndarray, frameIndex=-1, wait=1) -> np.ndarray:
     """
     检测核心函数（显示），可中断
     :param originImg:
@@ -333,18 +335,18 @@ def detectShow(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     """
     drawedImg = detect(originImg, frameIndex)
     cv2.imshow("detecting frame", drawedImg)
-    if cv2.waitKey(1) == 27:
+    if cv2.waitKey(wait) == 27:
         return np.array([])
     return drawedImg
 
 
 def demoPhotos():
-    dir = r'E:\PycharmProjects\License_Plate_Detection_Pytorch-master\dataset\raw_pics'
+    dir = args.img_dir
     for file in os.listdir(dir):
         if not file.startswith('2020'):
             continue
         print('<<<<<< ' + file + ' >>>>>>')
-        detectShow(ImageUtil.Imread(os.path.join(dir, file)))
+        detectShow(ImageUtil.Imread(os.path.join(dir, file)), wait=0)
 
 
 def demoVideo(showDetection=True):
@@ -361,7 +363,7 @@ def demoVideo(showDetection=True):
     fps: int = VideoUtil.GetFps(inStream)
     if args.load_binary:
         binary.load(args.load_binary)
-    frameLimit = 10000 if frameLimit > 10000 else frameLimit
+    # frameLimit = 10000 if frameLimit > 10000 else frameLimit  # 限制最大帧数，只处理视频前多少帧
     global tracker
     tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
     while True:
@@ -415,6 +417,7 @@ class Serialization:
     def popLoaded(self):
         self._pointer += 1
         if self._pointer >= len(self._database):
+            print('错误：提取数据失败！预加载数据库已全部出队完毕！')
             return []
         return self._database[self._pointer - 1]  # [pointer++]
 
@@ -426,9 +429,13 @@ if __name__ == '__main__':
 
     import argparse
     parser = argparse.ArgumentParser(description='车牌识别程序')
-    parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名')
+    parser.add_argument('-dir','--img_dir', type=str, help='要检测的图片文件夹', default=None)
+    parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
     args = parser.parse_args()
-    demoVideo()
+    if args.img_dir is None:
+        demoVideo()
+    else:
+        demoPhotos()
