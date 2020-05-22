@@ -59,7 +59,7 @@ from typing import List, Iterator
 from collections import namedtuple
 class Tractor:
     """
-    基于编辑距离的简易追踪器。负责优化和合并检测结果
+    简易追踪器。负责优化和合并检测结果
     """
     class Plate:
         """
@@ -236,10 +236,6 @@ class Tractor:
                 return plateList
 
             plateList = sorted(plateList, key=lambda plate: plate.startTime)  # 按照出现时间进行排序，相同的车牌会相邻
-            # 除掉存在时间极短的车牌
-            # for plate in plateList:
-            #     if plate.endTime - plate.startTime <= 3:
-            #         plateList.remove(plate)
             # 合并相邻的相似车牌
             for i in range(len(plateList) - 1, 0, -1):
                 this, previous = plateList[i], plateList[i-1]
@@ -383,6 +379,8 @@ def demoVideo(showDetection=True):
     if args.save_binary is not None:
         binary.save(args.save_binary)
     # 写日志
+    if args.output is None:
+        return
     import os
     with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt', 'a') as fpLog:
         print('以下是检测到的车牌号：')
@@ -400,6 +398,7 @@ def demoVideo(showDetection=True):
 class Serialization:
     def __init__(self):
         self._database = []
+        self._pointer = 0
 
     def append(self, obj):
         self._database += [obj]
@@ -411,15 +410,15 @@ class Serialization:
     def load(self, binFilename: str):
         with open(binFilename, 'rb') as f:
             self._database = pickle.load(f)
-            self._pointer = 0
         return self._database
 
     def popLoaded(self):
-        self._pointer += 1
         if self._pointer >= len(self._database):
-            print('错误：提取数据失败！预加载数据库已全部出队完毕！')
+            print('错误：提取数据失败！预加载队列全部出队完毕！')
             return []
-        return self._database[self._pointer - 1]  # [pointer++]
+        popedElement = self._database[self._pointer]
+        self._pointer += 1
+        return popedElement  # [pointer++]
 
 
 if __name__ == '__main__':
@@ -431,6 +430,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='车牌识别程序')
     parser.add_argument('-dir','--img_dir', type=str, help='要检测的图片文件夹', default=None)
     parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
+    parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
