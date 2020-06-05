@@ -10,7 +10,7 @@ Prj-Linux/*build*/
 
 # my ignores
 .idea/
+model/
 /20200*
-/model/
 /LPDetector_Hyper.py
 /testVideos.py

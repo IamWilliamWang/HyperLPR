@@ -176,7 +176,7 @@ def refineCrop(sections,width=16):
 
         sec_center = np.array([section.shape[1]/2,section.shape[0]/2])
         binary_niblack = nt.niBlackThreshold(section,17,-0.255)
-        imagex, contours, hierarchy  = cv2.findContours(binary_niblack,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        contours, hierarchy  = cv2.findContours(binary_niblack,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
         boxs = []
         for contour in contours:
             x,y,w,h = cv2.boundingRect(contour)

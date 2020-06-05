@@ -53,8 +53,7 @@ import cv2
 import numpy as np
 import re
 import pickle
-
-
+import warnings
 from typing import List, Iterator
 from collections import namedtuple
 class Tractor:
@@ -414,7 +413,7 @@ class Serialization:
 
     def popLoaded(self):
         if self._pointer >= len(self._database):
-            print('错误：提取数据失败！预加载队列全部出队完毕！')
+            warnings.warn('错误：提取数据失败！预加载队列全部出队完毕！', stacklevel=2)
             return []
         popedElement = self._database[self._pointer]
         self._pointer += 1
@@ -422,7 +421,8 @@ class Serialization:
 
 
 if __name__ == '__main__':
-    model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
+    # model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
+    model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     tracker = None
     binary = Serialization()
 
