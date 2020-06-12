@@ -70,11 +70,7 @@ class LPR():
         newBoxes = self.multiTracker.update(image)
         if newBoxes:
             watches = newBoxes
-            # print('Tracking!!!\n'*10)
-            # for box in newBoxes:
-            #     image=drawRectBox(image,box,'',(0,255,255))
         else:  # 追踪失败，则进行常规检测
-            # print('Cascading!!!\n'*10)
             if not self.replaceCascadeWithSSD:  # 如果使用cascade检测车牌
                 watches = self.watch_cascade.detectMultiScale(image_gray, en_scale, 2, minSize=(36, 9),
                                                               maxSize=(36 * 40, 9 * 40))
@@ -187,6 +183,6 @@ class LPR():
             image_rgb, rect_refine = self.finemappingVertical(plate, rect)
             res, confidence = self.recognizeOne(image_rgb)
             res_set.append([res, confidence, rect_refine])
-            if confidence > 0.9 and self.multiTracker.isNewRectangle(rect):
+            if confidence > 0.9 and self.multiTracker.isNewRectangle(rect):  # 如果该框置信度>0.9，则启用CSRT替管Cascade
                 self.multiTracker.appendTrackerCSRT(image, rect_refine)
         return res_set
