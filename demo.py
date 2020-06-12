@@ -31,7 +31,7 @@ from PIL import ImageDraw
 fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
 
 
-def drawRectBox(image, rect, addText):
+def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(255, 255, 255)):
     """
     在image上画一个带文字的方框
     :param image: 原先的ndarray
@@ -39,11 +39,15 @@ def drawRectBox(image, rect, addText):
     :param addText: 要加的文字
     :return: 画好的图像
     """
-    cv2.rectangle(image, (int(rect[0]), int(rect[1])), (int(rect[0] + rect[2]), int(rect[1] + rect[3])), (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.rectangle(image, (int(rect[0] - 1), int(rect[1]) - 16), (int(rect[0] + 115), int(rect[1])), (0, 0, 255), -1, cv2.LINE_AA)
+    cv2.rectangle(image, (int(rect[0]), int(rect[1])), (int(rect[0] + rect[2]), int(rect[1] + rect[3])), rect_color, 2,
+                  cv2.LINE_AA)
     img = Image.fromarray(image)
-    draw = ImageDraw.Draw(img)
-    draw.text((int(rect[0] + 1), int(rect[1] - 16)), addText, (255, 255, 255), font=fontC)
+    if addText:
+        cv2.rectangle(image, (int(rect[0] - 1), int(rect[1]) - 16), (int(rect[0] + 115), int(rect[1])), rect_color, -1,
+                      cv2.LINE_AA)
+        img = Image.fromarray(image)
+        draw = ImageDraw.Draw(img)
+        draw.text((int(rect[0] + 1), int(rect[1] - 16)), addText, text_color, font=fontC)
     imagex = np.array(img)
     return imagex
 
@@ -54,17 +58,78 @@ import numpy as np
 import re
 import pickle
 import warnings
-from typing import List, Iterator
+from typing import List, Tuple, Iterator
 from collections import namedtuple
+
+
+class CvMultiTracker:
+    def __init__(self):
+        self._trackers: List[cv2.TrackerCSRT] = []
+        self._lastNewRects: List[Tuple[float]] = []
+        self._lifeTimeLimit: List[int] = []
+
+    def isNewRectangle(self, rect):
+        if not rect:
+            return True
+        for lastRects in self._lastNewRects:
+            if np.std(np.array(lastRects) - np.array(rect)) <= 25:
+                return False
+        return True
+
+    def appendTrackerCSRT(self, initImage: np.ndarray, initBox: List[float]) -> None:  # 使用当前的图像和初始box来添加新的csrtTracker
+        if initImage is None or not initBox or len(initBox) != 4:
+            return
+        initBox[0] -= initBox[2] * 0.1
+        initBox[1] -= initBox[3] * 0.1
+        initBox[2] *= 1.2
+        initBox[3] *= 1.2
+        newTracker = cv2.TrackerCSRT_create()
+        newTracker.init(initImage, tuple(initBox))
+        self._trackers.append(newTracker)
+        self._lifeTimeLimit.append(24)
+
+    def update(self, image, purgeMissedTracker=True) -> list:
+        newBoxes = []
+        assert len(self._trackers) == len(self._lifeTimeLimit)
+        for i, trackerCSRT in enumerate(reversed(self._trackers)):
+            success, newBox = trackerCSRT.update(image)
+            newBox = tuple(newBox)
+            if not success:
+                self._lifeTimeLimit[i] -= 1
+                if self._lifeTimeLimit[i] == 0:
+                    self.purgeAt(i)
+                continue
+            if purgeMissedTracker:
+                if not self.isNewRectangle(newBox):
+                    self._lifeTimeLimit[i] -= 1
+                if self._lifeTimeLimit[i] == 0:
+                    self.purgeAt(i)
+                    continue
+            newBoxes.append(newBox)
+        self._lastNewRects = newBoxes
+        return self._lastNewRects
+
+    def purgeAt(self, n: int) -> None:
+        if 0 <= n < len(self._trackers):
+            del self._trackers[n]
+            del self._lifeTimeLimit[n]
+
+    def workingTrackerCount(self) -> int:
+        return len(self._trackers)
+
+
 class Tractor:
     """
     简易追踪器。负责优化和合并检测结果
     """
+
     class Plate:
         """
         数据类，作为储存车牌的基础单元
         """
-        def __init__(self, plateStr: str, confidence: float, left: float, right: float, top: float, bottom: float, width: float, height: float, startTime: int, endTime: int):
+
+        def __init__(self, plateStr: str, confidence: float, left: float, right: float, top: float, bottom: float,
+                     width: float, height: float, startTime: int, endTime: int):
             """
             初始化车牌
             :param plateStr: 车牌号
@@ -83,7 +148,8 @@ class Tractor:
 
         def __str__(self) -> str:
             return "Plate{str='%s', confidence=%f, left=%f, right=%f, top=%f, bottom=%f, width=%f, height=%f, startTime=%d, endTime=%d}" % \
-                   (self.plateStr, self.confidence, self.left, self.right, self.top, self.bottom, self.width, self.height, self.startTime, self.endTime)
+                   (self.plateStr, self.confidence, self.left, self.right, self.top, self.bottom, self.width,
+                    self.height, self.startTime, self.endTime)
 
     def __init__(self, lifeTimeLimit=48):
         """
@@ -94,6 +160,7 @@ class Tractor:
         self._movingPlates: List[Tractor.Plate] = []
         self._deadPlates: List[Tractor.Plate] = []
         self._lifeTimeLimit = lifeTimeLimit  # 每个车牌的寿命时长
+        self.multiTracker = CvMultiTracker()
 
     def _killMovingPlates(self, nowTime: int) -> None:
         """
@@ -112,6 +179,7 @@ class Tractor:
         :param nowPlateTuple: 当前的车牌tuple，类型是self.VehiclePlate
         :return: 相似车牌的generator
         """
+
         def computeIntersect(rectangle1: List[float], rectangle2: List[float]):
             """
             计算两个矩形相交部分的面积
@@ -149,6 +217,7 @@ class Tractor:
         :param nowTime: 当前时间
         :return: 最大可能的车牌号和置信度
         """
+
         def safeAssignment(beAssignedPlate: str, assignPlate: str) -> str:
             """
             禁止高优先级的车牌前缀被赋值成低优先级车牌前缀的赋值函数。用于代替 plate被赋值=plate赋值 语句
@@ -172,7 +241,8 @@ class Tractor:
                     finalPrefixes = assignPlate[:2]
                     finalOthers = assignPlate[2:]
                 else:
-                    priority1 = len(prefixes) - prefixes.index(beAssignedPlate[0]) if beAssignedPlate[0] in prefixes else -1
+                    priority1 = len(prefixes) - prefixes.index(beAssignedPlate[0]) if beAssignedPlate[
+                                                                                          0] in prefixes else -1
                     priority2 = len(prefixes) - prefixes.index(assignPlate[0]) if assignPlate[0] in prefixes else -1
                     if priority1 <= priority2:
                         finalPrefixes = assignPlate[0]
@@ -181,14 +251,16 @@ class Tractor:
                         finalPrefixes = beAssignedPlate[0]
                         finalOthers = assignPlate[1:]
             # 如果是特殊车牌，经常出现重叠字母的情况
-            return finalPrefixes + finalOthers if finalPrefixes[-1] != finalOthers[0] else finalPrefixes + finalOthers[1:]
+            return finalPrefixes + finalOthers if finalPrefixes[-1] != finalOthers[0] else finalPrefixes + finalOthers[
+                                                                                                           1:]
 
         # 预处理车牌部分：
         # 跳过条件：车牌字符串太短
         if len(nowPlateTuple.str) < 7:
             return nowPlateTuple.str, nowPlateTuple.confidence
         # 跳过条件：以英文字母开头（S和X除外）
-        if 'A' <= nowPlateTuple.str[0] <= 'R' or 'T' <= nowPlateTuple.str[0] <= 'W' or 'Y' <= nowPlateTuple.str[0] <= 'Z':
+        if 'A' <= nowPlateTuple.str[0] <= 'R' or 'T' <= nowPlateTuple.str[0] <= 'W' or 'Y' <= nowPlateTuple.str[
+            0] <= 'Z':
             return nowPlateTuple.str, nowPlateTuple.confidence
         # 符合特殊车牌条件，修改其车牌号以符合特殊车牌的正常结构
         specialPlateReMatch = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
@@ -216,9 +288,9 @@ class Tractor:
             # （取巧部分）在高置信度向低置信度进行赋值时。禁止将低频度的前缀赋给高频度的前缀
             savedPlate.plateStr = safeAssignment(savedPlate.plateStr, nowPlateTuple.str)
             # 剩余的属性进行赋值，并记录更新endTime
-            savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom,\
-                savedPlate.width, savedPlate.height, savedPlate.endTime = \
-                nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top,\
+            savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom, \
+            savedPlate.width, savedPlate.height, savedPlate.endTime = \
+                nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top, \
                 nowPlateTuple.bottom, nowPlateTuple.width, nowPlateTuple.height, nowTime
             return nowPlateTuple.str, nowPlateTuple.confidence
         else:  # 储存的置信度高，只更新endTime
@@ -230,6 +302,7 @@ class Tractor:
         相同车牌结果合并到一起
         :return:
         """
+
         def purgeAndMerge(plateList: List[Tractor.Plate]) -> List[Tractor.Plate]:
             if len(plateList) < 2:
                 return plateList
@@ -237,13 +310,14 @@ class Tractor:
             plateList = sorted(plateList, key=lambda plate: plate.startTime)  # 按照出现时间进行排序，相同的车牌会相邻
             # 合并相邻的相似车牌
             for i in range(len(plateList) - 1, 0, -1):
-                this, previous = plateList[i], plateList[i-1]
-                if self.editDistance(this.plateStr, previous.plateStr) < 4 and this.startTime <= previous.endTime:  # 合并相邻的编辑距离较小的车牌号
+                this, previous = plateList[i], plateList[i - 1]
+                if self.editDistance(this.plateStr,
+                                     previous.plateStr) < 4 and this.startTime <= previous.endTime:  # 合并相邻的编辑距离较小的车牌号
                     endTime = max(this.endTime, previous.endTime)
                     if this.confidence > previous.confidence:
                         this.startTime = previous.startTime
                         this.endTime = endTime
-                        plateList[i], plateList[i-1] = plateList[i-1], plateList[i]
+                        plateList[i], plateList[i - 1] = plateList[i - 1], plateList[i]
                     else:
                         previous.endTime = endTime
                     del plateList[i]
@@ -306,7 +380,8 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     :return:
     """
     image = None
-    resultList = model.SimpleRecognizePlateByE2E(originImg) if args.load_binary is None else binary.popLoaded()
+    resultList = model.SimpleRecognizePlateByE2E(originImg,
+                                                 tracker.multiTracker) if args.load_binary is None else binary.popLoaded()
     if args.save_binary is not None:
         binary.append(resultList)
     for plateStr, confidence, rect in resultList:
@@ -315,7 +390,10 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
                 vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
                 plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
 
-            image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)))
+            cvTrackerEnabled = tracker.multiTracker.workingTrackerCount() == 0
+            image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)),
+                                (0, 0, 255) if cvTrackerEnabled else (0, 255, 255),
+                                (255, 255, 255) if cvTrackerEnabled else (0, 0, 0))
             print("%s (%.5f)" % (plateStr, confidence))
         break  # 每帧只处理最有可能的车牌号
     return image if image is not None else originImg
@@ -365,13 +443,14 @@ def demoVideo(showDetection=True):
         frame = VideoUtil.ReadFrame(inStream)
         if frame.shape[0] == 0 or frameIndex > frameLimit:
             break
+        startTime = time.time()
         frameDrawed = detectShow(frame, frameIndex) if showDetection else detect(frame, frameIndex)
         if frameDrawed.shape[0] == 0:
             break
         if args.output is not None:
             VideoUtil.WriteFrame(outStream, frameDrawed)
         frameIndex += 1
-        print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
+        print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
     if showDetection:
         cv2.destroyAllWindows()
     VideoUtil.CloseVideos(inStream, outStream)
@@ -381,15 +460,20 @@ def demoVideo(showDetection=True):
     if args.output is None:
         return
     import os
-    with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt', 'a') as fpLog:
+    with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt',
+              'a') as fpLog:
         print('以下是检测到的车牌号：')
         allResult = tracker.getAll()
         for resultPlate in allResult:
             if resultPlate.startTime / fps // 60 < 2:
-                line = '%s %.3f [%.2f-%.2f秒]' % (resultPlate.plateStr, resultPlate.confidence, resultPlate.startTime/fps, resultPlate.endTime/fps)
+                line = '%s %.3f [%.2f-%.2f秒]' % (
+                    resultPlate.plateStr, resultPlate.confidence, resultPlate.startTime / fps,
+                    resultPlate.endTime / fps)
             else:
                 seconds1, seconds2 = resultPlate.startTime / fps, resultPlate.endTime / fps
-                line = '%s %.3f [%d分%.2f秒 - %d分%.2f秒]' % (resultPlate.plateStr, resultPlate.confidence, seconds1//60, seconds1 % 60, seconds2//60, seconds2 % 60)
+                line = '%s %.3f [%d分%.2f秒 - %d分%.2f秒]' % (
+                    resultPlate.plateStr, resultPlate.confidence, seconds1 // 60, seconds1 % 60, seconds2 // 60,
+                    seconds2 % 60)
             print(line)
             fpLog.write(line + '\n')
 
@@ -421,14 +505,14 @@ class Serialization:
 
 
 if __name__ == '__main__':
-    # model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
-    model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
-    tracker = None
+    model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
+    # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     binary = Serialization()
-
+    tracker = None
     import argparse
+
     parser = argparse.ArgumentParser(description='车牌识别程序')
-    parser.add_argument('-dir','--img_dir', type=str, help='要检测的图片文件夹', default=None)
+    parser.add_argument('-dir', '--img_dir', type=str, help='要检测的图片文件夹', default=None)
     parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
     parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)

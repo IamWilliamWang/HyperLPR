@@ -4,9 +4,13 @@ from keras import backend as K
 from keras.models import *
 from keras.layers import *
 
+# region 加强版模块
+from demo import drawRectBox
 import sys
+
 sys.path.append(r'E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection')
 from detect_opencv import detect
+# endregion
 chars = [u"京", u"沪", u"津", u"渝", u"冀", u"晋", u"蒙", u"辽", u"吉", u"黑", u"苏", u"浙", u"皖", u"闽", u"赣", u"鲁", u"豫", u"鄂",
          u"湘", u"粤", u"桂",
          u"琼", u"川", u"贵", u"云", u"藏", u"陕", u"甘", u"青", u"宁", u"新", u"0", u"1", u"2", u"3", u"4", u"5", u"6", u"7",
@@ -16,6 +20,7 @@ chars = [u"京", u"沪", u"津", u"渝", u"冀", u"晋", u"蒙", u"辽", u"吉",
          u"Y", u"Z", u"港", u"学", u"使", u"警", u"澳", u"挂", u"军", u"北", u"南", u"广", u"沈", u"兰", u"成", u"济", u"海", u"民",
          u"航", u"空"
          ]
+
 
 class LPR():
     def __init__(self, model_detection: str, model_finemapping: str, model_seq_rec: str):
@@ -58,22 +63,35 @@ class LPR():
         height = image.shape[0]
         padding = int(height * top_bottom_padding_rate)
         scale = image.shape[1] / float(image.shape[0])
-        image = cv2.resize(image, (int(scale * resize_h), resize_h))
-        image_color_cropped = image[padding:resize_h - padding, 0:image.shape[1]]
+        image_resized = cv2.resize(image, (int(scale * resize_h), resize_h))
+        image_color_cropped = image_resized[padding:resize_h - padding, 0:image_resized.shape[1]]
         image_gray = cv2.cvtColor(image_color_cropped, cv2.COLOR_RGB2GRAY)
-        if not self.replaceCascadeWithSSD:
-            watches = self.watch_cascade.detectMultiScale(image_gray, en_scale, 2, minSize=(36, 9),
-                                                          maxSize=(36 * 40, 9 * 40))
-        else:
-            watches = detect(image_color_cropped)
+        # 尝试进行车牌追踪
+        newBoxes = self.multiTracker.update(image)
+        if newBoxes:
+            watches = newBoxes
+            # print('Tracking!!!\n'*10)
+            # for box in newBoxes:
+            #     image=drawRectBox(image,box,'',(0,255,255))
+        else:  # 追踪失败，则进行常规检测
+            # print('Cascading!!!\n'*10)
+            if not self.replaceCascadeWithSSD:  # 如果使用cascade检测车牌
+                watches = self.watch_cascade.detectMultiScale(image_gray, en_scale, 2, minSize=(36, 9),
+                                                              maxSize=(36 * 40, 9 * 40))
+            else:  # 如果使用SSD检测车牌
+                watches = detect(image_color_cropped)
         cropped_images = []
         for (x, y, w, h) in watches:
             x -= w * 0.14
             w += w * 0.28
             y -= h * 0.15
             h += h * 0.3
-            cropped = self.cropImage(image_color_cropped, (int(x), int(y), int(w), int(h)))
-            cropped_images.append([cropped, [x, y + padding, w, h]])
+            if newBoxes:
+                cropped = self.cropImage(image, (int(x), int(y), int(w), int(h)))
+                cropped_images.append([cropped, [x, y, w, h]])
+            else:
+                cropped = self.cropImage(image_color_cropped, (int(x), int(y), int(w), int(h)))
+                cropped_images.append([cropped, [x, y + padding, w, h]])
         return cropped_images
 
     def fastdecode(self, y_pred):
@@ -160,7 +178,8 @@ class LPR():
         y_pred = y_pred[:, 2:, :]
         return self.fastdecode(y_pred)
 
-    def SimpleRecognizePlateByE2E(self, image):
+    def SimpleRecognizePlateByE2E(self, image, multiTracker):
+        self.multiTracker = multiTracker
         images = self.detectPlateRough(image, image.shape[0], top_bottom_padding_rate=0.1)
         res_set = []
         for j, plate in enumerate(images):
@@ -168,4 +187,6 @@ class LPR():
             image_rgb, rect_refine = self.finemappingVertical(plate, rect)
             res, confidence = self.recognizeOne(image_rgb)
             res_set.append([res, confidence, rect_refine])
+            if confidence > 0.9 and self.multiTracker.isNewRectangle(rect):
+                self.multiTracker.appendTrackerCSRT(image, rect_refine)
         return res_set

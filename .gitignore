@@ -11,6 +11,7 @@ Prj-Linux/*build*/
 # my ignores
 .idea/
 model/
+out/
 /20200*
 /LPDetector_Hyper.py
 /testVideos.py
