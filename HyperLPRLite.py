@@ -6,9 +6,6 @@ from keras.layers import *
 
 # region 加强版模块
 from demo import drawRectBox
-import sys
-
-sys.path.append(r'E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection')
 from detect_opencv import detect
 # endregion
 chars = [u"京", u"沪", u"津", u"渝", u"冀", u"晋", u"蒙", u"辽", u"吉", u"黑", u"苏", u"浙", u"皖", u"闽", u"赣", u"鲁", u"豫", u"鄂",
@@ -29,6 +26,11 @@ class LPR():
             self.replaceCascadeWithSSD = False
         else:
             self.replaceCascadeWithSSD = True
+            self.dnnNet = cv2.dnn.readNetFromCaffe(
+                r"E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection\mssd512_voc.prototxt",
+                r"E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection\mssd512_voc.caffemodel")
+            # self.dnnNet.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            # self.dnnNet.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         self.modelFineMapping = self.model_finemapping()
         self.modelFineMapping.load_weights(model_finemapping)
         self.modelSeqRec = self.model_seq_rec(model_seq_rec)
@@ -75,7 +77,7 @@ class LPR():
                 watches = self.watch_cascade.detectMultiScale(image_gray, en_scale, 2, minSize=(36, 9),
                                                               maxSize=(36 * 40, 9 * 40))
             else:  # 如果使用SSD检测车牌
-                watches = detect(image_color_cropped)
+                watches = detect(image_color_cropped, self.dnnNet)
         cropped_images = []
         for (x, y, w, h) in watches:
             x -= w * 0.14

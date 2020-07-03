@@ -466,13 +466,13 @@ class HyperLprWindow(QMainWindow):
 
         self.setCentralWidget(main_splitter)
 
-        self.setWindowTitle("HyperLPR车牌识别软件v1.0")
+        self.setWindowTitle("车牌识别软件v1.0")
 
         self.start_init_signal.emit()
 
     def read_path_and_show_one_image(self):
 
-        hyperlpr_dir_info_filepath = QDir.homePath() + "/hyperlpr_dir_file"
+        hyperlpr_dir_info_filepath = QDir.homePath() + "/hyperlpr_dir_file.txt"
         if os.path.exists(hyperlpr_dir_info_filepath):
             with open(hyperlpr_dir_info_filepath, 'r') as f:
                 self.hyperlpr_dir_path = f.read()
@@ -489,7 +489,7 @@ class HyperLprWindow(QMainWindow):
             self, "读取文件夹", QDir.currentPath())
 
         if len(self.hyperlpr_dir_path) > 0:
-            hyperlpr_dir_info_filepath = QDir.homePath() + "/hyperlpr_dir_file"
+            hyperlpr_dir_info_filepath = QDir.homePath() + "/hyperlpr_dir_file.txt"
             with open(hyperlpr_dir_info_filepath, 'w') as f:
                 f.write(self.hyperlpr_dir_path)
             self.reset_info_gui()

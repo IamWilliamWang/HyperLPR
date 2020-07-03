@@ -23,11 +23,7 @@ def SpeedTest(image_path):
     print("Image size :" + str(grr.shape[1]) + "x" + str(grr.shape[0]) + " need " + str(round(t * 1000, 2)) + "ms")
 
 
-from testVideos import ImageUtil, VideoUtil
-from PIL import ImageFont
-from PIL import Image
-from PIL import ImageDraw
-
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
 
 
@@ -52,14 +48,17 @@ def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(2
     return imagex
 
 
-import HyperLPRLite as pr
+from typing import List, Tuple, Iterator
 import cv2
 import numpy as np
 import re
 import pickle
 import warnings
-from typing import List, Tuple, Iterator
+import traceback
 from collections import namedtuple
+from matplotlib import pyplot as plt
+import HyperLPRLite as pr
+from Util import ImageUtil, VideoUtil, ffmpegUtil
 
 
 class CvMultiTracker:
@@ -314,8 +313,8 @@ class Tractor:
         if not similarPlates:  # 找不到相似的车牌号，插入新的
             initPlateList = list(nowPlateTuple) + [nowTime] * 2  # 初始化列表
             # （取巧部分）统计显示 95.9% 的概率成立
-            if initPlateList[0][1] == 'F':
-                initPlateList[0] = '粤' + initPlateList[0][1:]
+            if initPlateList[0][1] == 'F' or initPlateList[0][2] == 'F':
+                initPlateList[0] = '粤' + initPlateList[0][initPlateList[0].find('F'):]
             self._movingPlates.append(Tractor.Plate(*initPlateList))
             return self._movingPlates[-1].plateStr, nowPlateTuple.confidence
         # 如果有相似的车牌
@@ -446,19 +445,22 @@ def detectShow(originImg: np.ndarray, frameIndex=-1, wait=1) -> np.ndarray:
     :return:
     """
     drawedImg = detect(originImg, frameIndex)
-    cv2.imshow("detecting frame", drawedImg)
+    cv2.imshow("Frame after detection", drawedImg)
     if cv2.waitKey(wait) == 27:
         return np.array([])
     return drawedImg
 
 
 def demoPhotos():
-    dir = args.img_dir
-    for file in os.listdir(dir):
-        if not file.startswith('2020'):
+    global tracker
+    tracker = Tractor(1)  # 设为1，意为禁用追踪功能
+    # 处理所有照片
+    for file in os.listdir(args.img_dir):
+        # if not file.startswith('2020'):
+        if not file.endswith('jpg'):
             continue
         print('<<<<<< ' + file + ' >>>>>>')
-        detectShow(ImageUtil.Imread(os.path.join(dir, file)), wait=0)
+        detectShow(ImageUtil.Imread(os.path.join(args.img_dir, file)), wait=0)
 
 
 def demoVideo(showDialog=True):
@@ -469,7 +471,9 @@ def demoVideo(showDialog=True):
     :return:
     """
     inStream = VideoUtil.OpenInputVideo(args.video)
-    outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
+    # outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
+    outStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream)) if args.output else None
+    outStreamNoSkip = ffmpegUtil.OpenOutputVideo(args.output.replace('.mp4', '.original.mp4'), VideoUtil.GetFps(inStream)) if args.video_write_mode != 'dynamic' else None
     frameIndex = 0
     frameLimit = VideoUtil.GetVideoFramesCount(inStream) if 'rtsp' not in args.video else 2 ** 31 - 1
     fps: int = VideoUtil.GetFps(inStream) / args.drop
@@ -478,40 +482,72 @@ def demoVideo(showDialog=True):
     # frameLimit = 10000 if frameLimit > 10000 else frameLimit  # 限制最大帧数，只处理视频前多少帧
     global tracker
     tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
-    # lastFrame = None
+    lastFrame = None
     while True:
+        # 读取一帧
         frame = VideoUtil.ReadFrame(inStream)
-        height, width, channel = frame.shape
-        frame = frame[int(height * 0.3):, int(width * 0.3):]
-        if args.drop != 1:
+        # 终止或重新连接
+        if args.rtsp:
+            # 如果rtsp流关闭了，重置流
+            if frame.shape[0] == 0:
+                VideoUtil.CloseVideos(inStream)
+                time.sleep(0.5)
+                inStream = VideoUtil.OpenInputVideo(args.video)
+                print('Readed rtsp failed! Reseting input stream...')
+                continue
+            # 终止读取
+            if frameIndex > frameLimit:
+                break
+        else:
+            # 如果是视频，终止读取
+            if frame.shape[0] == 0 or frameIndex > frameLimit:
+                break
+        # 对原始帧的操作
+        if showDialog:  # 保证每一帧都imshow过
+            cv2.imshow('Raw frame', frame)
+            if cv2.waitKey(1) == 27:
+                break
+        if args.drop != 1:  # imshow完了再跳过
             if frameIndex % args.drop != 0:
                 frameIndex += 1
                 continue
-        # if lastFrame is not None:
-        #     frameGray = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-        #     lastFrameGray = cv2.cvtColor(lastFrame, cv2.COLOR_BGR2GRAY)
-        #     print('std: %f' % np.std(frameGray - lastFrameGray))
-        #     if np.std(frame-lastFrame) < 120:
-        #         frameIndex += 1
-        #         continue
-        if frame.shape[0] == 0 or frameIndex > frameLimit:
-            break
+        # 开始处理原始帧
+        height, width, channel = frame.shape
+        frame = frame[int(height * 0.3):, int(width * 0.3):]
+        if args.video_write_mode != 'dynamic':
+            ffmpegUtil.WriteFrame(outStreamNoSkip, frame)
+        if lastFrame is not None:
+            oldpil = Image.fromarray(cv2.cvtColor(lastFrame, cv2.COLOR_BGR2RGB))  # PIL图像和cv2图像转化
+            nowpil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            diff = ImageChops.difference(oldpil, nowpil)  # PIL图片库函数
+            # plt.imshow(diff);plt.show()
+            std = np.std(diff)
+            print('frame diff = ' + str(std), end='')
+            if std < 8.9:
+                frameIndex += 1
+                print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
+                continue
         startTime = time.time()
-        # lastFrame = frame
+        lastFrame = frame
         frameDrawed = detectShow(frame, frameIndex) if showDialog else detect(frame, frameIndex)
         if frameDrawed.shape[0] == 0:
             break
-        if args.output is not None:
-            VideoUtil.WriteFrame(outStream, frameDrawed)
+        if args.output:
+            try:
+                ffmpegUtil.WriteFrame(outStream, frameDrawed)
+                ffmpegUtil.WriteFrame(outStreamNoSkip, frameDrawed)
+            except ValueError as e:
+                traceback.print_exc()
         frameIndex += 1
         print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
     if showDialog:
         cv2.destroyAllWindows()
-    VideoUtil.CloseVideos(inStream, outStream)
+    VideoUtil.CloseVideos(inStream)
+    ffmpegUtil.CloseVideos(outStream, outStreamNoSkip)
     if args.save_binary is not None:
         binary.save(args.save_binary)
     # 写日志
-    if args.output is None:
+    if not args.output:
         return
     import os
     with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt',
@@ -568,15 +604,30 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='车牌识别程序')
     parser.add_argument('-dir', '--img_dir', type=str, help='要检测的图片文件夹', default=None)
     parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
+    parser.add_argument('-vwm', '--video_write_mode', type=str, help='写入模式。dynamic：只保留动态帧；both：保留和不保留静态帧分别写入两个视频中')
     parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
     parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=1)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
     args = parser.parse_args()
+    args.output = '20200703rtsp.mp4'
+    args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
+    # args.video = r"E:\项目\车牌检测\有用的部分\Record20200605-2_clip.mp4"
+    # args.video = r"E:\项目\车牌检测\所有录像\Record20200605-2.mp4"
+    # args.video = r"E:\项目\车牌检测\所有录像\Record20200628-1.mp4"
     if args.rtsp:
         args.video = args.rtsp
+    globalStartTime = time.time()
     if args.img_dir is None:
         demoVideo()
     else:
         demoPhotos()
+    globalTimeSeconds = time.time() - globalStartTime
+    globalTimeHours = globalTimeSeconds // 3600
+    globalTimeMinutes = (globalTimeSeconds - globalTimeHours * 3600) // 60
+    globalTimeSeconds = globalTimeSeconds % 60
+    globalTime = '%d:%d:%f' % (
+    globalTimeHours, globalTimeMinutes, globalTimeSeconds) if globalTimeHours != 0 else '%d:%f' % (
+    globalTimeMinutes, globalTimeSeconds)
+    print('总用时：' + globalTime)
