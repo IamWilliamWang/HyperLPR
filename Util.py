@@ -1,4 +1,6 @@
+import pickle
 import sys
+import warnings
 from typing import List
 
 import cv2
@@ -124,7 +126,8 @@ class VideoUtil:
         :param stream: 可进行写入的视频输出流
         :param frame: 要写的一帧
         """
-        stream.write(frame)
+        if stream:
+            stream.write(frame)
 
     @staticmethod
     def WriteFrames(stream: cv2.VideoWriter, frames: List[np.ndarray]) -> None:
@@ -134,8 +137,9 @@ class VideoUtil:
         :param frames: 要写的多帧
         :return:
         """
-        for writeFrame in frames:
-            stream.write(writeFrame)
+        if stream:
+            for writeFrame in frames:
+                stream.write(writeFrame)
 
     @staticmethod
     def GetNowPosition(stream: cv2.VideoCapture) -> int:
@@ -209,7 +213,8 @@ class ffmpegUtil:
 
     @staticmethod
     def WriteFrame(writer, img):
-        writer.append_data(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        if writer:
+            writer.append_data(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
     @staticmethod
     def CloseVideos(*streams) -> None:
@@ -220,6 +225,32 @@ class ffmpegUtil:
         for videoStream in streams:
             if videoStream is not None:
                 videoStream.close()
+
+
+class Serialization:
+    def __init__(self):
+        self._database = []
+        self._pointer = 0
+
+    def append(self, obj):
+        self._database += [obj]
+
+    def save(self, binFilename: str):
+        with open(binFilename, 'wb') as f:
+            pickle.dump(self._database, f)
+
+    def load(self, binFilename: str):
+        with open(binFilename, 'rb') as f:
+            self._database = pickle.load(f)
+        return self._database
+
+    def popLoaded(self):
+        if self._pointer >= len(self._database):
+            warnings.warn('错误：提取数据失败！预加载队列全部出队完毕！', stacklevel=2)
+            return []
+        popedElement = self._database[self._pointer]
+        self._pointer += 1
+        return popedElement  # [pointer++]
 
 
 # import av

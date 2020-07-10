@@ -3,8 +3,9 @@ import numpy as np
 from keras import backend as K
 from keras.models import *
 from keras.layers import *
+from hyperlpr_py3 import typeDistinguish
 
-# region 加强版模块
+# region DNN模块
 from demo import drawRectBox
 from detect_opencv import detect
 # endregion
@@ -168,6 +169,7 @@ class LPR():
         image = cv2.resize(image, (int(136), int(36)))
         return image, rect
 
+    # 解析小图片中的车牌号
     def recognizeOne(self, src):
         x_tempx = src
         x_temp = cv2.resize(x_tempx, (164, 48))
@@ -176,6 +178,8 @@ class LPR():
         y_pred = y_pred[:, 2:, :]
         return self.fastdecode(y_pred)
 
+    plateType = ["蓝", "黄", "绿", "白", "黑"]
+
     def SimpleRecognizePlateByE2E(self, image, multiTracker):
         self.multiTracker = multiTracker
         images = self.detectPlateRough(image, image.shape[0], top_bottom_padding_rate=0.1)
@@ -183,8 +187,10 @@ class LPR():
         for j, plate in enumerate(images):
             plate, rect = plate
             image_rgb, rect_refine = self.finemappingVertical(plate, rect)
-            res, confidence = self.recognizeOne(image_rgb)
-            res_set.append([res, confidence, rect_refine])
+            plateStr, confidence = self.recognizeOne(image_rgb)
+            if confidence > 0.9:
+                print('(%s)' % self.plateType[typeDistinguish.SimplePredict(plate)], end='')
+            res_set.append([plateStr, confidence, rect_refine])
             if confidence > 0.9 and self.multiTracker.isNewRectangle(rect):  # 如果该框置信度>0.9，则启用CSRT替管Cascade
                 self.multiTracker.appendTrackerCSRT(image, rect_refine)
         return res_set

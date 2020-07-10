@@ -1,10 +1,6 @@
-import sys
-# reload(sys)
-# sys.setdefaultencoding("utf-8")
-
-
 import os
 import time
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
 def SpeedTest(image_path):
@@ -21,10 +17,6 @@ def SpeedTest(image_path):
         model.SimpleRecognizePlateByE2E(grr)
     t = (time.time() - t0) / 20.0
     print("Image size :" + str(grr.shape[1]) + "x" + str(grr.shape[0]) + " need " + str(round(t * 1000, 2)) + "ms")
-
-
-from PIL import Image, ImageChops, ImageDraw, ImageFont
-fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
 
 
 def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(255, 255, 255)):
@@ -49,109 +41,58 @@ def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(2
 
 
 from typing import List, Tuple, Iterator
-import cv2
-import numpy as np
-import re
-import pickle
-import warnings
-import traceback
 from collections import namedtuple
-from matplotlib import pyplot as plt
+import cv2
 import HyperLPRLite as pr
-from Util import ImageUtil, VideoUtil, ffmpegUtil
+from matplotlib import pyplot as plt
+import numpy as np
+from queue import Queue
+import re
+import threading
+import traceback
+from Util import ImageUtil, VideoUtil, ffmpegUtil, Serialization
 
 
-class CvMultiTracker:
-    def __init__(self):
-        self._trackers: List[cv2.TrackerCSRT] = []
-        self._lastNewRects: List[Tuple[float]] = []
-        self._lifeTimeLimit: List[int] = []
-        self._lifeTimeLimitInit: int = 24
+class ReaderThread:
+    def __init__(self, inStream: cv2.VideoCapture, rtsp: str):
+        self._inStream: cv2.VideoCapture = inStream
+        self._rtspAddress: str = rtsp
+        self._queue: Queue = Queue()
+        self._qsize = 0
+        self._thread = threading.Thread(target=self._readFrame, name='read frame thread')
+        self.alive = False
 
-    def isNewRectangle(self, rect: Tuple[float]) -> bool:
-        """
-        判断rect是否和上一次检测的框几乎重合
-        :param rect:
-        :return:
-        """
-        if not rect:
-            return True
-        for lastRects in self._lastNewRects:
-            if np.std(np.array(lastRects) - np.array(rect)) <= 25:
-                return False
-        return True
-
-    def appendTrackerCSRT(self, initImage: np.ndarray, initBox: List[float]) -> None:
-        """
-        使用当前的image和初始box来添加新的csrtTracker
-        :param initImage:
-        :param initBox:
-        :return:
-        """
-        if initImage is None or not initBox or len(initBox) != 4:
-            return
-        # 扩大一点车牌的范围，四个方向各扩展10%
-        initBox[0] -= initBox[2] * 0.1
-        initBox[1] -= initBox[3] * 0.1
-        initBox[2] *= 1.2
-        initBox[3] *= 1.2
-        newTracker = cv2.TrackerCSRT_create()
-        newTracker.init(initImage, tuple(initBox))
-        self._trackers.append(newTracker)
-        self._lifeTimeLimit.append(self._lifeTimeLimitInit)
-
-    def update(self, image: np.ndarray, purgeMissedTracker=True) -> List[Tuple[float]]:
-        """
-        使用当前的image更新追踪器，返回新的Boxes
-        :param image:
-        :param purgeMissedTracker:
-        :return:
-        """
-        newBoxes = []
-        assert len(self._trackers) == len(self._lifeTimeLimit)
-        for i, trackerCSRT in enumerate(reversed(self._trackers)):
-            success, newBox = trackerCSRT.update(image)
-            newBox = tuple(newBox)
-            if not success:  # 如果cvTracker追踪失败
-                self._lifeTimeLimit[i] -= 1
-                if self._lifeTimeLimit[i] == 0:
-                    self.purgeAt(i)
-                continue
-            if purgeMissedTracker:
-                if not self.isNewRectangle(newBox):  # 如果这个框与之前的框大部分重合
-                    self._lifeTimeLimit[i] -= 1
-                if self._lifeTimeLimit[i] == 0:
-                    self.purgeAt(i)
+    def _readFrame(self):
+        self.alive = True
+        while self.alive:
+            frame = VideoUtil.ReadFrame(self._inStream)
+            if frame.shape[0] == 0:  # 如果读不出来任何帧
+                if 'rtsp' in self._rtspAddress:  # 是rtsp的话就重新建立连接
+                    VideoUtil.CloseVideos(self._inStream)
+                    self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
+                    print('Readed rtsp failed! Reseting input stream...')
                     continue
-            newBoxes.append(newBox)
-        self._lastNewRects = newBoxes
-        return self._lastNewRects
+                else:  # 是视频的话就退出
+                    break
+            else:
+                self._queue.put(frame)
+                self._qsize += 1
+        self.alive = False
 
-    def purgeAt(self, n: int) -> None:
-        """
-        删除第n个追踪器
-        :param n:
-        :return:
-        """
-        if 0 <= n < len(self._trackers):
-            del self._trackers[n]
-            del self._lifeTimeLimit[n]
+    def start(self):
+        if self.alive:
+            raise RuntimeError("Reading thread is busy now, please call stop the thread first!")
+        self._thread.start()
 
-    def reborn(self, n: int) -> None:
-        """
-        重置第n个追踪器的生命计时器
-        :param n:
-        :return:
-        """
-        if 0 <= n < len(self._trackers):
-            self._lifeTimeLimit[n] = self._lifeTimeLimitInit
+    def stop(self):
+        self.alive = False
 
-    def workingTrackerCount(self) -> int:
-        """
-        获得正在工作的追踪器个数
-        :return:
-        """
-        return len(self._trackers)
+    def get(self, timeout=30):
+        self._qsize -= 1
+        return self._queue.get(timeout=timeout)
+
+    def qsize(self):
+        return self._qsize
 
 
 class Tractor:
@@ -408,6 +349,103 @@ class Tractor:
         return int(distanceMatrix[len(word1)][len(word2)])
 
 
+class CvMultiTracker:
+    def __init__(self):
+        self._trackers: List[cv2.TrackerCSRT] = []
+        self._lastNewRects: List[Tuple[float]] = []
+        self._lifeTimeLimit: List[int] = []
+        self._lifeTimeLimitInit: int = 24
+
+    def isNewRectangle(self, rect: Tuple[float]) -> bool:
+        """
+        判断rect是否和上一次检测的框几乎重合
+        :param rect:
+        :return:
+        """
+        if not rect:
+            return True
+        for lastRects in self._lastNewRects:
+            if np.std(np.array(lastRects) - np.array(rect)) <= 25:
+                return False
+        return True
+
+    def appendTrackerCSRT(self, initImage: np.ndarray, initBox: List[float]) -> None:
+        """
+        使用当前的image和初始box来添加新的csrtTracker
+        :param initImage:
+        :param initBox:
+        :return:
+        """
+        if initImage is None or not initBox or len(initBox) != 4:
+            return
+        # 扩大一点车牌的范围，四个方向各扩展10%
+        initBox[0] -= initBox[2] * 0.1
+        initBox[1] -= initBox[3] * 0.1
+        initBox[2] *= 1.2
+        initBox[3] *= 1.2
+        newTracker = cv2.TrackerCSRT_create()
+        newTracker.init(initImage, tuple(initBox))
+        self._trackers.append(newTracker)
+        self._lifeTimeLimit.append(self._lifeTimeLimitInit)
+
+    def update(self, image: np.ndarray, purgeMissedTracker=True) -> List[Tuple[float]]:
+        """
+        使用当前的image更新追踪器，返回新的Boxes
+        :param image:
+        :param purgeMissedTracker:
+        :return:
+        """
+        newBoxes = []
+        assert len(self._trackers) == len(self._lifeTimeLimit)
+        purgeIndexes = []
+        for i, trackerCSRT in enumerate(self._trackers):
+            success, newBox = trackerCSRT.update(image)
+            newBox = tuple(newBox)
+            if not success:  # 如果cvTracker追踪失败
+                self._lifeTimeLimit[i] -= 1
+                if self._lifeTimeLimit[i] == 0:
+                    purgeIndexes.append(i)
+                continue
+            if purgeMissedTracker:
+                if not self.isNewRectangle(newBox):  # 如果这个框与之前的框大部分重合
+                    self._lifeTimeLimit[i] -= 1
+                if self._lifeTimeLimit[i] == 0:
+                    purgeIndexes.append(i)
+                    continue
+            newBoxes.append(newBox)
+        self._lastNewRects = newBoxes
+        purgeIndexes.sort(reverse=True)
+        for purseAt in purgeIndexes:
+            self.purgeAt(purseAt)
+        return self._lastNewRects
+
+    def purgeAt(self, n: int) -> None:
+        """
+        删除第n个追踪器
+        :param n:
+        :return:
+        """
+        if 0 <= n < len(self._trackers):
+            del self._trackers[n]
+            del self._lifeTimeLimit[n]
+
+    def reborn(self, n: int) -> None:
+        """
+        重置第n个追踪器的生命计时器
+        :param n:
+        :return:
+        """
+        if 0 <= n < len(self._trackers):
+            self._lifeTimeLimit[n] = self._lifeTimeLimitInit
+
+    def workingTrackerCount(self) -> int:
+        """
+        获得正在工作的追踪器个数
+        :return:
+        """
+        return len(self._trackers)
+
+
 def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     """
     检测核心函数（不显示）
@@ -470,80 +508,92 @@ def demoVideo(showDialog=True):
     :param showDialog: 显示输出窗口
     :return:
     """
-    inStream = VideoUtil.OpenInputVideo(args.video)
-    # outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
-    outStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream)) if args.output else None
-    outStreamNoSkip = ffmpegUtil.OpenOutputVideo(args.output.replace('.mp4', '.original.mp4'), VideoUtil.GetFps(inStream)) if args.video_write_mode != 'dynamic' else None
-    frameIndex = 0
-    frameLimit = VideoUtil.GetVideoFramesCount(inStream) if 'rtsp' not in args.video else 2 ** 31 - 1
-    fps: int = VideoUtil.GetFps(inStream) / args.drop
-    if args.load_binary:
-        binary.load(args.load_binary)
-    # frameLimit = 10000 if frameLimit > 10000 else frameLimit  # 限制最大帧数，只处理视频前多少帧
-    global tracker
-    tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
-    lastFrame = None
-    while True:
-        # 读取一帧
-        frame = VideoUtil.ReadFrame(inStream)
-        # 终止或重新连接
-        if args.rtsp:
-            # 如果rtsp流关闭了，重置流
-            if frame.shape[0] == 0:
-                VideoUtil.CloseVideos(inStream)
-                time.sleep(0.5)
-                inStream = VideoUtil.OpenInputVideo(args.video)
-                print('Readed rtsp failed! Reseting input stream...')
-                continue
+    try:
+        inStream = VideoUtil.OpenInputVideo(args.video)
+        readThread = ReaderThread(inStream, args.video)
+        readThread.start()
+        # outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
+        if args.output:
+            outStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream) // args.drop)
+            outStreamNoSkip = ffmpegUtil.OpenOutputVideo(args.output.replace('.mp4', '.original.mp4'), VideoUtil.GetFps(
+                inStream) // args.drop) if args.video_write_mode != 'dynamic' else None
+        else:
+            outStream, outStreamNoSkip = None, None
+        frameIndex = 0
+        frameLimit = VideoUtil.GetVideoFramesCount(inStream) if 'rtsp' not in args.video else 2 ** 31 - 1
+        fps: int = VideoUtil.GetFps(inStream) // args.drop
+        if args.load_binary:
+            binary.load(args.load_binary)
+        frameLimit = 10000 if frameLimit > 10000 else frameLimit  # 限制最大帧数，只处理视频前多少帧
+        global tracker
+        tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
+        lastFrame = None
+        while True:
+            # 读取一帧
+            # frame = VideoUtil.ReadFrame(inStream)
+            try:
+                frame = readThread.get(args.exitTimeout)
+            except:  # 当30秒取不到任何帧
+                readThread.stop()
+                break
+            # 终止或重新连接
+            # if args.rtsp:
+            #     # 如果rtsp流关闭了，重置流
+            #     if frame.shape[0] == 0:
+            #         VideoUtil.CloseVideos(inStream)
+            #         time.sleep(0.5)
+            #         inStream = VideoUtil.OpenInputVideo(args.video)
+            #         print('Readed rtsp failed! Reseting input stream...')
+            #         continue
             # 终止读取
             if frameIndex > frameLimit:
                 break
-        else:
-            # 如果是视频，终止读取
-            if frame.shape[0] == 0 or frameIndex > frameLimit:
-                break
-        # 对原始帧的操作
-        if showDialog:  # 保证每一帧都imshow过
-            cv2.imshow('Raw frame', frame)
-            if cv2.waitKey(1) == 27:
-                break
-        if args.drop != 1:  # imshow完了再跳过
-            if frameIndex % args.drop != 0:
-                frameIndex += 1
-                continue
-        # 开始处理原始帧
-        height, width, channel = frame.shape
-        frame = frame[int(height * 0.3):, int(width * 0.3):]
-        if args.video_write_mode != 'dynamic':
+            # else:
+            #     # 如果是视频，终止读取
+            #     if frame.shape[0] == 0 or frameIndex > frameLimit:
+            #         break
+            # 对原始帧的操作
+            if showDialog:  # 保证每一帧都imshow过
+                cv2.imshow('Raw frame', frame)
+                if cv2.waitKey(1) == 27:
+                    break
+            if args.drop != 1:  # imshow完了再跳过
+                if frameIndex % args.drop != 0:
+                    frameIndex += 1
+                    continue
+            # 开始处理原始帧
+            height, width, channel = frame.shape
+            frame = frame[int(height * 0.3):, int(width * 0.3):]
             ffmpegUtil.WriteFrame(outStreamNoSkip, frame)
-        if lastFrame is not None:
-            oldpil = Image.fromarray(cv2.cvtColor(lastFrame, cv2.COLOR_BGR2RGB))  # PIL图像和cv2图像转化
-            nowpil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            diff = ImageChops.difference(oldpil, nowpil)  # PIL图片库函数
-            # plt.imshow(diff);plt.show()
-            std = np.std(diff)
-            print('frame diff = ' + str(std), end='')
-            if std < 8.9:
-                frameIndex += 1
-                print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
-                continue
-        startTime = time.time()
-        lastFrame = frame
-        frameDrawed = detectShow(frame, frameIndex) if showDialog else detect(frame, frameIndex)
-        if frameDrawed.shape[0] == 0:
-            break
-        if args.output:
+            if lastFrame is not None:
+                oldpil = Image.fromarray(cv2.cvtColor(lastFrame, cv2.COLOR_BGR2RGB))  # PIL图像和cv2图像转化
+                nowpil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                diff = ImageChops.difference(oldpil, nowpil)  # PIL图片库函数
+                # plt.imshow(diff);plt.show()
+                std = np.std(diff)
+                print('{%.3f}<%d> ' % (std, readThread.qsize()), end='')
+                if std < 8.9:
+                    frameIndex += 1
+                    print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
+                    continue
+            startTime = time.time()
+            lastFrame = frame
+            frameDrawed = detectShow(frame, frameIndex) if showDialog else detect(frame, frameIndex)
+            if frameDrawed.shape[0] == 0:
+                break
             try:
                 ffmpegUtil.WriteFrame(outStream, frameDrawed)
                 ffmpegUtil.WriteFrame(outStreamNoSkip, frameDrawed)
             except ValueError as e:
                 traceback.print_exc()
-        frameIndex += 1
-        print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
-    if showDialog:
-        cv2.destroyAllWindows()
-    VideoUtil.CloseVideos(inStream)
-    ffmpegUtil.CloseVideos(outStream, outStreamNoSkip)
+            frameIndex += 1
+            print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
+        if showDialog:
+            cv2.destroyAllWindows()
+        VideoUtil.CloseVideos(inStream)
+        ffmpegUtil.CloseVideos(outStream, outStreamNoSkip)
+    except:  # 任何地方报错了不要管
+        traceback.print_exc()
     if args.save_binary is not None:
         binary.save(args.save_binary)
     # 写日志
@@ -568,32 +618,8 @@ def demoVideo(showDialog=True):
             fpLog.write(line + '\n')
 
 
-class Serialization:
-    def __init__(self):
-        self._database = []
-        self._pointer = 0
-
-    def append(self, obj):
-        self._database += [obj]
-
-    def save(self, binFilename: str):
-        with open(binFilename, 'wb') as f:
-            pickle.dump(self._database, f)
-
-    def load(self, binFilename: str):
-        with open(binFilename, 'rb') as f:
-            self._database = pickle.load(f)
-        return self._database
-
-    def popLoaded(self):
-        if self._pointer >= len(self._database):
-            warnings.warn('错误：提取数据失败！预加载队列全部出队完毕！', stacklevel=2)
-            return []
-        popedElement = self._database[self._pointer]
-        self._pointer += 1
-        return popedElement  # [pointer++]
-
-
+# 初始化字体
+fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
 if __name__ == '__main__':
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
@@ -604,30 +630,34 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='车牌识别程序')
     parser.add_argument('-dir', '--img_dir', type=str, help='要检测的图片文件夹', default=None)
     parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
-    parser.add_argument('-vwm', '--video_write_mode', type=str, help='写入模式。dynamic：只保留动态帧；both：保留和不保留静态帧分别写入两个视频中')
+    parser.add_argument('-vwm', '--video_write_mode', type=str, help='写入模式。dynamic：只保留动态帧；both：保留和不保留静态帧分别写入两个视频中', default='both')
     parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
     parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=1)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
     args = parser.parse_args()
-    args.output = '20200703rtsp.mp4'
-    args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
-    # args.video = r"E:\项目\车牌检测\有用的部分\Record20200605-2_clip.mp4"
-    # args.video = r"E:\项目\车牌检测\所有录像\Record20200605-2.mp4"
-    # args.video = r"E:\项目\车牌检测\所有录像\Record20200628-1.mp4"
+    # 传参
+    args.video = r"C:\Users\william\Desktop\厂内\Record20200311-2-厂内.mp4"
+    # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
+    args.output = 'Record20200311-2-厂内.mp4'
+    # args.drop = 3
+    # 检测到时rtsp则赋值进video
     if args.rtsp:
         args.video = args.rtsp
+    args.exitTimeout = 15 if args.rtsp else 1  # 设置不同模式下的超时秒数
+    # 开始执行总程序
     globalStartTime = time.time()
     if args.img_dir is None:
         demoVideo()
     else:
         demoPhotos()
+    # 统计执行的时长
     globalTimeSeconds = time.time() - globalStartTime
     globalTimeHours = globalTimeSeconds // 3600
     globalTimeMinutes = (globalTimeSeconds - globalTimeHours * 3600) // 60
     globalTimeSeconds = globalTimeSeconds % 60
-    globalTime = '%d:%d:%f' % (
-    globalTimeHours, globalTimeMinutes, globalTimeSeconds) if globalTimeHours != 0 else '%d:%f' % (
-    globalTimeMinutes, globalTimeSeconds)
+    globalTime = '%d时%d分%.3f秒' % (
+        globalTimeHours, globalTimeMinutes, globalTimeSeconds) if globalTimeHours != 0 else '%d分%.3f秒' % (
+        globalTimeMinutes, globalTimeSeconds)
     print('总用时：' + globalTime)
