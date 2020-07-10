@@ -69,6 +69,7 @@ class ReaderThread:
             if frame.shape[0] == 0:  # 如果读不出来任何帧
                 if 'rtsp' in self._rtspAddress:  # 是rtsp的话就重新建立连接
                     VideoUtil.CloseVideos(self._inStream)
+                    time.sleep(0.5)
                     self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
                     print('Readed rtsp failed! Reseting input stream...')
                     continue
@@ -240,15 +241,20 @@ class Tractor:
             0] <= 'Z':
             return nowPlateTuple.str, nowPlateTuple.confidence
         # 符合特殊车牌条件，修改其车牌号以符合特殊车牌的正常结构
-        specialPlateReMatch = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
-        if specialPlateReMatch:
-            plateStr = ''
-            for i in range(1, 4):  # 把三个括号里的拿出来拼接就是车牌号
-                plateStr += specialPlateReMatch.group(i)
+        # regexMatch特殊车牌 = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
+        # if regexMatch特殊车牌:
+        #     plateStr = ''
+        #     for i in range(1, 4):  # 把三个括号里的拿出来拼接就是车牌号
+        #         plateStr += regexMatch特殊车牌.group(i)
+        #     tmp = list(nowPlateTuple)
+        #     tmp[0] = plateStr
+        #     nowPlateTuple = self.VehiclePlate(*tmp)
+        regexMatch厂内车牌 = re.match(r'^.+?(2[1234][01]\d{2,}).*$', nowPlateTuple.str)
+        if regexMatch厂内车牌:
+            # '210', '211', '220', '221', '230', '240'
             tmp = list(nowPlateTuple)
-            tmp[0] = plateStr
+            tmp[0] = '厂内' + regexMatch厂内车牌.group(1)[:5]
             nowPlateTuple = self.VehiclePlate(*tmp)
-
         # 开始分析：在储存的里找相似的车牌号
         similarPlates = list(self._getSimilarSavedPlates(nowPlateTuple, nowTime))
         if not similarPlates:  # 找不到相似的车牌号，插入新的
@@ -310,6 +316,13 @@ class Tractor:
         """
         print('整理数据：大小从 %d ' % (len(self._deadPlates) + len(self._movingPlates)), end='')
         self._mergeSamePlates()
+        # 删去概率低于90的普通车牌
+        for i in range(len(self._deadPlates), -1, -1):
+            if self._deadPlates[i].confidence < 0.9 and '厂内' not in self._deadPlates[i].plateStr:
+                del self._deadPlates[i]
+        for i in range(len(self._movingPlates), -1, -1):
+            if self._movingPlates[i].confidence < 0.9 and '厂内' not in self._movingPlates[i].plateStr:
+                del self._movingPlates[i]
         print('到 %d' % (len(self._deadPlates) + len(self._movingPlates)))
         return self._deadPlates + self._movingPlates
 
@@ -459,6 +472,10 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     if args.save_binary is not None:
         binary.append(resultList)
     for plateStr, confidence, rect in resultList:
+        regexMatch厂内车牌 = re.match(r'^.+?(2[1234][01]\d{2,}).*$', plateStr)
+        if regexMatch厂内车牌:  # 一般厂内车牌置信度不高，强行给开绿灯
+            plateStr = '厂内' + regexMatch厂内车牌.group(1)
+            confidence = max(confidence, 0.8500001)
         if confidence > 0.85:
             if args.video:
                 vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
@@ -490,8 +507,6 @@ def detectShow(originImg: np.ndarray, frameIndex=-1, wait=1) -> np.ndarray:
 
 
 def demoPhotos():
-    global tracker
-    tracker = Tractor(1)  # 设为1，意为禁用追踪功能
     # 处理所有照片
     for file in os.listdir(args.img_dir):
         # if not file.startswith('2020'):
@@ -508,24 +523,30 @@ def demoVideo(showDialog=True):
     :param showDialog: 显示输出窗口
     :return:
     """
+    global tracker
     try:
         inStream = VideoUtil.OpenInputVideo(args.video)
         readThread = ReaderThread(inStream, args.video)
         readThread.start()
-        # outStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
-        if args.output:
-            outStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream) // args.drop)
-            outStreamNoSkip = ffmpegUtil.OpenOutputVideo(args.output.replace('.mp4', '.original.mp4'), VideoUtil.GetFps(
-                inStream) // args.drop) if args.video_write_mode != 'dynamic' else None
-        else:
-            outStream, outStreamNoSkip = None, None
+        # placeCaptureStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
+        placeCaptureStream, noSkipStream, recordingStream = None, None, None
+        if args.output:  # 有output才会打开这些输出的流
+            if 'd' in args.video_write_mode:  # 只写入没被跳过的检测结果帧
+                placeCaptureStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream) // args.drop)
+            if 's' in args.video_write_mode:  # 全程不跳帧，比dynamic多了被跳过的帧
+                insertIdx = args.output.rfind('.')
+                videoName = args.output[:insertIdx] + '.noskip' + args.output[insertIdx:]
+                noSkipStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream) // args.drop)
+            if 'r' in args.video_write_mode:  # 实时录像，不做任何处理（如果是rtsp就是录像，如果是video就是转码）
+                insertIdx = args.output.rfind('.')
+                videoName = args.output[:insertIdx] + '.record' + args.output[insertIdx:]
+                recordingStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream) // args.drop)
         frameIndex = 0
         frameLimit = VideoUtil.GetVideoFramesCount(inStream) if 'rtsp' not in args.video else 2 ** 31 - 1
         fps: int = VideoUtil.GetFps(inStream) // args.drop
         if args.load_binary:
             binary.load(args.load_binary)
-        frameLimit = 10000 if frameLimit > 10000 else frameLimit  # 限制最大帧数，只处理视频前多少帧
-        global tracker
+        frameLimit = min(frameLimit, 10000)  # 限制最大帧数，只处理视频前多少帧
         tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
         lastFrame = None
         while True:
@@ -533,6 +554,9 @@ def demoVideo(showDialog=True):
             # frame = VideoUtil.ReadFrame(inStream)
             try:
                 frame = readThread.get(args.exitTimeout)
+                ffmpegUtil.WriteFrame(recordingStream, frame)
+                if args.rtsp and readThread.qsize() > 1500:  # 当队列大于1500帧画面，就扔掉头部的几帧
+                    continue
             except:  # 当30秒取不到任何帧
                 readThread.stop()
                 break
@@ -564,7 +588,6 @@ def demoVideo(showDialog=True):
             # 开始处理原始帧
             height, width, channel = frame.shape
             frame = frame[int(height * 0.3):, int(width * 0.3):]
-            ffmpegUtil.WriteFrame(outStreamNoSkip, frame)
             if lastFrame is not None:
                 oldpil = Image.fromarray(cv2.cvtColor(lastFrame, cv2.COLOR_BGR2RGB))  # PIL图像和cv2图像转化
                 nowpil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -575,6 +598,7 @@ def demoVideo(showDialog=True):
                 if std < 8.9:
                     frameIndex += 1
                     print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
+                    ffmpegUtil.WriteFrame(noSkipStream, frame)
                     continue
             startTime = time.time()
             lastFrame = frame
@@ -582,18 +606,19 @@ def demoVideo(showDialog=True):
             if frameDrawed.shape[0] == 0:
                 break
             try:
-                ffmpegUtil.WriteFrame(outStream, frameDrawed)
-                ffmpegUtil.WriteFrame(outStreamNoSkip, frameDrawed)
+                ffmpegUtil.WriteFrame(placeCaptureStream, frameDrawed)
+                ffmpegUtil.WriteFrame(noSkipStream, frameDrawed)
             except ValueError as e:
                 traceback.print_exc()
             frameIndex += 1
             print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
-        if showDialog:
-            cv2.destroyAllWindows()
         VideoUtil.CloseVideos(inStream)
-        ffmpegUtil.CloseVideos(outStream, outStreamNoSkip)
+        ffmpegUtil.CloseVideos(placeCaptureStream, noSkipStream, recordingStream)
     except:  # 任何地方报错了不要管
         traceback.print_exc()
+    finally:
+        if showDialog:
+            cv2.destroyAllWindows()
     if args.save_binary is not None:
         binary.save(args.save_binary)
     # 写日志
@@ -624,13 +649,14 @@ if __name__ == '__main__':
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     binary = Serialization()
-    tracker = None
+    tracker = Tractor(1)  # 设为1，意为禁用追踪功能
     import argparse
 
     parser = argparse.ArgumentParser(description='车牌识别程序')
     parser.add_argument('-dir', '--img_dir', type=str, help='要检测的图片文件夹', default=None)
     parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
-    parser.add_argument('-vwm', '--video_write_mode', type=str, help='写入模式。dynamic：只保留动态帧；both：保留和不保留静态帧分别写入两个视频中', default='both')
+    parser.add_argument('-vwm', '--video_write_mode', type=str,
+                        help='写入模式设置。(d)ynamic：保留动态帧(视频抓拍)。(s)tatic：保留静态帧。(r)ecord：保留原始录像(仅用于录制rtsp)', default='dr')
     parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
     parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=1)
@@ -638,10 +664,11 @@ if __name__ == '__main__':
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
     args = parser.parse_args()
     # 传参
-    args.video = r"C:\Users\william\Desktop\厂内\Record20200311-2-厂内.mp4"
+    # args.video = r"C:\Users\william\Desktop\厂内\Record20200326-厂内.mp4"
     # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
-    args.output = 'Record20200311-2-厂内.mp4'
-    # args.drop = 3
+    # args.output = '20200711rtsp.mp4'
+    # args.drop = 2
+    # args.video_write_mode = 'sdr'
     # 检测到时rtsp则赋值进video
     if args.rtsp:
         args.video = args.rtsp
@@ -661,3 +688,4 @@ if __name__ == '__main__':
         globalTimeHours, globalTimeMinutes, globalTimeSeconds) if globalTimeHours != 0 else '%d分%.3f秒' % (
         globalTimeMinutes, globalTimeSeconds)
     print('总用时：' + globalTime)
+    # python -m cProfile -s cumulative demo.py >> profile.log
