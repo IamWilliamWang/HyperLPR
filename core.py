@@ -26,9 +26,7 @@ class LPR():
             self.replaceCascadeWithSSD = False
         else:
             self.replaceCascadeWithSSD = True
-            self.dnnNet = cv2.dnn.readNetFromCaffe(
-                r"E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection\mssd512_voc.prototxt",
-                r"E:\PycharmProjects\Mobilenet-SSD-License-Plate-Detection\mssd512_voc.caffemodel")
+            self.dnnNet = cv2.dnn.readNetFromCaffe(model_detection.replace('caffemodel', 'prototxt'), model_detection)
             # self.dnnNet.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             # self.dnnNet.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         self.modelFineMapping = self.model_finemapping()

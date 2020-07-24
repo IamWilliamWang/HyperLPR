@@ -630,6 +630,7 @@ def demoVideo(showDialog=True):
                 traceback.print_exc()
             frameIndex += 1
             print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
+        readThread.stop()
         # 写日志
         if not args.output:
             return
@@ -659,7 +660,6 @@ def demoVideo(showDialog=True):
             cv2.destroyAllWindows()
         if args.save_binary is not None:
             binary.save(args.save_binary)
-        readThread.stop()
         VideoUtil.CloseVideos(inStream)
         ffmpegUtil.CloseVideos(placeCaptureStream, noSkipStream, recordingStream)
 
@@ -668,7 +668,7 @@ if __name__ == '__main__':
     # 初始化
     fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
-    # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
+    # model = pr.LPR("model/mssd512_voc.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     binary = Serialization()
     tracker = Tractor(1)  # 设为1，意为禁用追踪功能
     import argparse
@@ -689,7 +689,7 @@ if __name__ == '__main__':
     # args.video = r"C:\Users\william\Desktop\厂内\Record20200326-厂内.mp4"
     # args.video = r"E:\PycharmProjects\HyperLPR\20200711rtsp_3.record.mp4"
     # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
-    # args.output = '20200727rtsp.mp4'
+    # args.output = '20200724rtsp.mp4'
     # args.drop = 4
     # args.video_write_mode = 'sdr'
     # 检测到时rtsp则赋值进video
