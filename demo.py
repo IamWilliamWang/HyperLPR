@@ -43,13 +43,16 @@ class ReaderThread:
         self._inStream: cv2.VideoCapture = inStream
         self._rtspAddress: str = rtsp
         self._queue: Queue = Queue()
-        self._qsize = 0
+        self._qsize: int = 0
         self._thread = threading.Thread(target=self._readFrame, name='read frame thread')
-        self.alive = False
+        self._itemMemory: int = 0  # 队列中每个元素占多少字节
+        self.alive = False  # 线程的生死
 
     def _readFrame(self):
         self.alive = True
         while self.alive:
+            while len(self) > args.memory_limit:  # 当超过内存限制时，暂停读取
+                time.sleep(1)
             # 尝试读取一帧
             try:
                 frame = VideoUtil.ReadFrame(self._inStream)
@@ -66,6 +69,8 @@ class ReaderThread:
                 traceback.print_exc()
                 self.alive = False
                 return
+            if self._itemMemory == 0:  # 记录每个元素的占用空间
+                self._itemMemory = sizeof(frame)
             self._queue.put(frame)
             self._qsize += 1
         self.alive = False
@@ -74,7 +79,6 @@ class ReaderThread:
         if self.alive:
             raise RuntimeError("Reading thread is busy now, please call stop the thread first!")
         self._thread.start()
-        # self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
 
     def stop(self):
         self.alive = False
@@ -82,10 +86,16 @@ class ReaderThread:
     def get(self, timeout=30):
         self._qsize -= 1
         return self._queue.get(timeout=timeout)
-        # return VideoUtil.ReadFrame(self._inStream)
 
     def qsize(self):
         return self._qsize
+
+    def __len__(self):
+        """
+        输出现有队列的内存大小(Bytes)
+        :return:
+        """
+        return self.qsize() * self._itemMemory
 
 
 class Tractor:
@@ -376,9 +386,6 @@ class Tractor:
         self._lifeTimeLimit = binary.popLoaded()
         self.multiTracker = binary.popLoaded()
 
-    def __len__(self):
-        return sizeof(self._movingPlates) + sizeof(self._deadPlates) + len(self.multiTracker)
-
 
 class CvMultiTracker:
     def __init__(self):
@@ -476,9 +483,6 @@ class CvMultiTracker:
         """
         return len(self._trackers)
 
-    def __len__(self):
-        return sizeof(self._trackers) + sizeof(self._lastNewRects) + sizeof(self._lifeTimeLimit)
-
 
 def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     """
@@ -548,7 +552,6 @@ def demoVideo(showDialog=True):
     :return:
     """
     global tracker
-    # gc_nextTime = time.time() + 60  # 一分钟收集一次
     inStream, readThread = None, None
     placeCaptureStream, noSkipStream, recordingStream = None, None, None
     try:
@@ -571,14 +574,14 @@ def demoVideo(showDialog=True):
         fps: int = VideoUtil.GetFps(inStream)
         if args.load_binary:
             binary.load(args.load_binary)
-        frameLimit = min(frameLimit, 200000)  # 限制最大帧数，只处理视频前多少帧
+        # frameLimit = min(frameLimit, 50000)  # 限制最大帧数，只处理视频前多少帧
         tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
         lastFrame = None
         while True:
             try:
                 frame = readThread.get(args.exitTimeout)
                 ffmpegUtil.WriteFrame(recordingStream, frame)
-                if args.rtsp and readThread.qsize() > 1500:  # 当队列大于1500帧画面，就扔掉头部的几帧
+                if args.rtsp and len(readThread) > args.memory_limit:  # 当读取的队列大于限定时
                     continue
             except:  # 当30秒取不到任何帧
                 readThread.stop()
@@ -586,9 +589,6 @@ def demoVideo(showDialog=True):
             # 终止读取
             if frameIndex > frameLimit:
                 break
-            # if time.time() > gc_nextTime:
-            #     print('Collected garbages:', gc.collect())
-            #     gc_nextTime = time.time() + 600  # 十分钟后再gc
             # 对原始帧的操作
             if showDialog:  # 保证每一帧都imshow过
                 cv2.imshow('Raw frame', frame)
@@ -608,8 +608,9 @@ def demoVideo(showDialog=True):
                 # plt.imshow(diff);plt.show()
                 try:
                     std: float = np.std(diff)
-                    print('{%.3f}<%d> ' % (std, readThread.qsize()), end='')
+                    print('{%.3f}<%d><%dM>' % (std, readThread.qsize(), len(readThread) // 1048576), end='')
                 except:
+                    traceback.print_exc()
                     std = 10000
                 if std < 8.9:
                     frameIndex += 1
@@ -665,7 +666,6 @@ def demoVideo(showDialog=True):
 
 if __name__ == '__main__':
     # 初始化
-    # gc.disable()
     fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
@@ -683,18 +683,19 @@ if __name__ == '__main__':
     parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=1)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
+    parser.add_argument('-memory', '--memory_limit', type=int, help='内存上限限制为多少字节', default=1024 ** 3 * 5)
     args = parser.parse_args()
     # 传参
     # args.video = r"C:\Users\william\Desktop\厂内\Record20200326-厂内.mp4"
     # args.video = r"E:\PycharmProjects\HyperLPR\20200711rtsp_3.record.mp4"
     # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
     # args.output = '20200727rtsp.mp4'
-    # args.drop = 1
+    # args.drop = 4
     # args.video_write_mode = 'sdr'
     # 检测到时rtsp则赋值进video
     if args.rtsp:
         args.video = args.rtsp
-    args.exitTimeout = 15 if args.rtsp else 1  # 设置不同模式下的超时秒数
+    args.exitTimeout = 10 if args.rtsp else 1  # 设置不同模式下的读取超时
     # 开始执行总程序
     globalStartTime = time.time()
     if args.img_dir is None:
