@@ -3,22 +3,6 @@ import time
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
-def SpeedTest(image_path):
-    """
-    原先demo自带的speedtest
-    :param image_path:
-    :return:
-    """
-    grr = cv2.imread(image_path)
-    model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
-    model.SimpleRecognizePlateByE2E(grr)
-    t0 = time.time()
-    for x in range(20):
-        model.SimpleRecognizePlateByE2E(grr)
-    t = (time.time() - t0) / 20.0
-    print("Image size :" + str(grr.shape[1]) + "x" + str(grr.shape[0]) + " need " + str(round(t * 1000, 2)) + "ms")
-
-
 def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(255, 255, 255)):
     """
     在image上画一个带文字的方框
@@ -41,15 +25,16 @@ def drawRectBox(image, rect, addText=None, rect_color=(0, 0, 255), text_color=(2
 
 
 from typing import List, Tuple, Iterator
-from collections import namedtuple
 import cv2
-import HyperLPRLite as pr
+import core as pr
+import gc
 from matplotlib import pyplot as plt
 import numpy as np
 from queue import Queue
 import re
 import threading
 import traceback
+from sys import getsizeof as sizeof
 from Util import ImageUtil, VideoUtil, ffmpegUtil, Serialization
 
 
@@ -65,25 +50,31 @@ class ReaderThread:
     def _readFrame(self):
         self.alive = True
         while self.alive:
-            frame = VideoUtil.ReadFrame(self._inStream)
-            if frame.shape[0] == 0:  # 如果读不出来任何帧
-                if 'rtsp' in self._rtspAddress:  # 是rtsp的话就重新建立连接
-                    VideoUtil.CloseVideos(self._inStream)
-                    time.sleep(0.5)
-                    self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
-                    print('Readed rtsp failed! Reseting input stream...')
-                    continue
-                else:  # 是视频的话就退出
-                    break
-            else:
-                self._queue.put(frame)
-                self._qsize += 1
+            # 尝试读取一帧
+            try:
+                frame = VideoUtil.ReadFrame(self._inStream)
+                if frame.shape[0] == 0:
+                    if 'rtsp' in self._rtspAddress:  # 是rtsp的话就重新建立连接
+                        VideoUtil.CloseVideos(self._inStream)
+                        time.sleep(1)
+                        self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
+                        print('Readed rtsp failed! Reseting input stream...')
+                        continue
+                    else:  # 是视频的话就退出
+                        break
+            except:  # cv::OutOfMemoryError
+                traceback.print_exc()
+                self.alive = False
+                return
+            self._queue.put(frame)
+            self._qsize += 1
         self.alive = False
 
     def start(self):
         if self.alive:
             raise RuntimeError("Reading thread is busy now, please call stop the thread first!")
         self._thread.start()
+        # self._inStream = VideoUtil.OpenInputVideo(self._rtspAddress)
 
     def stop(self):
         self.alive = False
@@ -91,6 +82,7 @@ class ReaderThread:
     def get(self, timeout=30):
         self._qsize -= 1
         return self._queue.get(timeout=timeout)
+        # return VideoUtil.ReadFrame(self._inStream)
 
     def qsize(self):
         return self._qsize
@@ -134,11 +126,17 @@ class Tractor:
         初始化追踪器
         :param lifeTimeLimit: 车牌消失多久就算离开屏幕（越大越准确，但是计算越慢）
         """
-        self.VehiclePlate = namedtuple('vehicle_plate', 'str confidence left right top bottom width height')  # 车牌元组
+        # self.VehiclePlate = namedtuple('vehicle_plate', 'str confidence left right top bottom width height')  # 车牌元组
         self._movingPlates: List[Tractor.Plate] = []
         self._deadPlates: List[Tractor.Plate] = []
         self._lifeTimeLimit = lifeTimeLimit  # 每个车牌的寿命时长
         self.multiTracker = CvMultiTracker()
+
+    def VehiclePlate(self, *args) -> dict:
+        if len(args) != 8:
+            return {}
+        return {'plateStr': args[0], 'confidence': args[1], 'left': args[2], 'right': args[3], 'top': args[4],
+                'bottom': args[5], 'width': args[6], 'height': args[7]}
 
     def _killMovingPlates(self, nowTime: int) -> None:
         """
@@ -148,13 +146,15 @@ class Tractor:
         """
         for plate in self._movingPlates:
             if nowTime - plate.endTime > self._lifeTimeLimit:
+                # 避免内存溢出，这里删除部分的属性
+                # plate.height = plate.width = plate.left = plate.right = plate.top = plate.bottom = None
                 self._deadPlates.append(plate)
                 self._movingPlates.remove(plate)
 
-    def _getSimilarSavedPlates(self, nowPlateTuple: namedtuple, nowTime: int) -> Iterator[Plate]:
+    def _getSimilarSavedPlates(self, nowPlateInfo: dict, nowTime: int) -> Iterator[Plate]:
         """
         根据当前的车牌获取movingPlate中相似的车牌
-        :param nowPlateTuple: 当前的车牌tuple，类型是self.VehiclePlate
+        :param nowPlateInfo: 当前的车牌tuple，类型是self.VehiclePlate
         :return: 相似车牌的generator
         """
 
@@ -179,24 +179,24 @@ class Tractor:
 
         for i in range(len(self._movingPlates) - 1, -1, -1):
             savedPlate = self._movingPlates[i]  # 保存的车牌
-            editDistance = self.editDistance(savedPlate.plateStr, nowPlateTuple.str)
+            editDistance = self.editDistance(savedPlate.plateStr, nowPlateInfo['plateStr'])
             if editDistance < 4 and nowTime - savedPlate.endTime < self._lifeTimeLimit // 2:  # 编辑距离低于阈值，不比较方框位置
                 yield savedPlate
             elif editDistance < 5:  # 编辑距离适中，比较方框的位置有没有重合
                 rect1 = [savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom]
-                rect2 = [nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top, nowPlateTuple.bottom]
+                rect2 = [nowPlateInfo['left'], nowPlateInfo['right'], nowPlateInfo['top'], nowPlateInfo['bottom']]
                 if computeIntersect(rect1, rect2) != 0:
                     yield savedPlate
 
-    def analyzePlate(self, nowPlateTuple: namedtuple, nowTime: int) -> (str, float):
+    def analyzePlate(self, nowPlateInfo: dict, nowTime: int) -> (str, float):
         """
         根据当前车牌，进行分析。返回最大可能的车牌号和置信度
-        :param nowPlateTuple: 当前车牌，类型：self.VehiclePlate
+        :param nowPlateInfo: 当前车牌，类型：self.VehiclePlate
         :param nowTime: 当前时间
         :return: 最大可能的车牌号和置信度
         """
 
-        def safeAssignment(beAssignedPlate: str, assignPlate: str) -> str:
+        def getBetterPlate(beAssignedPlate: str, assignPlate: str) -> str:
             """
             禁止高优先级的车牌前缀被赋值成低优先级车牌前缀的赋值函数。用于代替 plate被赋值=plate赋值 语句
             :param beAssignedPlate: 要被赋值的车牌号
@@ -234,12 +234,12 @@ class Tractor:
 
         # 预处理车牌部分：
         # 跳过条件：车牌字符串太短
-        if len(nowPlateTuple.str) < 7:
-            return nowPlateTuple.str, nowPlateTuple.confidence
+        if len(nowPlateInfo['plateStr']) < 7:
+            return nowPlateInfo['plateStr'], nowPlateInfo['confidence']
         # 跳过条件：以英文字母开头（S和X除外）
-        if 'A' <= nowPlateTuple.str[0] <= 'R' or 'T' <= nowPlateTuple.str[0] <= 'W' or 'Y' <= nowPlateTuple.str[
+        if 'A' <= nowPlateInfo['plateStr'][0] <= 'R' or 'T' <= nowPlateInfo['plateStr'][0] <= 'W' or 'Y' <= nowPlateInfo['plateStr'][
             0] <= 'Z':
-            return nowPlateTuple.str, nowPlateTuple.confidence
+            return nowPlateInfo['plateStr'], nowPlateInfo['confidence']
         # 符合特殊车牌条件，修改其车牌号以符合特殊车牌的正常结构
         # regexMatch特殊车牌 = re.match(r'.*([SX厂]).*([GL内])(.+)', nowPlateTuple.str)
         # if regexMatch特殊车牌:
@@ -249,33 +249,32 @@ class Tractor:
         #     tmp = list(nowPlateTuple)
         #     tmp[0] = plateStr
         #     nowPlateTuple = self.VehiclePlate(*tmp)
-        regexMatch厂内车牌 = re.match(r'^.+?(2[1234][01]\d{2,}).*$', nowPlateTuple.str)
-        if regexMatch厂内车牌:
+        regexMatchesSpecialPlate = re.match(r'^.+?(2[1234][01]\d{2,}).*$', nowPlateInfo['plateStr'])
+        if regexMatchesSpecialPlate:
             # '210', '211', '220', '221', '230', '240'
-            tmp = list(nowPlateTuple)
-            tmp[0] = '厂内' + regexMatch厂内车牌.group(1)[:5]
-            nowPlateTuple = self.VehiclePlate(*tmp)
+            nowPlateInfo['plateStr'] = '厂内' + regexMatchesSpecialPlate.group(1)[:5]
         # 开始分析：在储存的里找相似的车牌号
-        similarPlates = list(self._getSimilarSavedPlates(nowPlateTuple, nowTime))
+        similarPlates = list(self._getSimilarSavedPlates(nowPlateInfo, nowTime))
         if not similarPlates:  # 找不到相似的车牌号，插入新的
-            initPlateList = list(nowPlateTuple) + [nowTime] * 2  # 初始化列表
+            # nowPlateInfo = list(nowPlateInfo) + [nowTime] * 2  # 初始化列表
+            nowPlateInfo.update({'startTime': nowTime, 'endTime': nowTime})
             # （取巧部分）统计显示 95.9% 的概率成立
-            if initPlateList[0][1] == 'F' or initPlateList[0][2] == 'F':
-                initPlateList[0] = '粤' + initPlateList[0][initPlateList[0].find('F'):]
-            self._movingPlates.append(Tractor.Plate(*initPlateList))
-            return self._movingPlates[-1].plateStr, nowPlateTuple.confidence
+            if nowPlateInfo['plateStr'][1] == 'F' or nowPlateInfo['plateStr'][2] == 'F':
+                nowPlateInfo['plateStr'] = '粤' + nowPlateInfo['plateStr'][nowPlateInfo['plateStr'].find('F'):]
+            self._movingPlates.append(Tractor.Plate(**nowPlateInfo))
+            return self._movingPlates[-1].plateStr, nowPlateInfo['confidence']
         # 如果有相似的车牌
         self._killMovingPlates(nowTime)  # 将寿命过长的车牌杀掉
         savedPlate = sorted(similarPlates, key=lambda plate: plate.confidence, reverse=True)[0]  # 按照置信度排序，取最高的
-        if savedPlate.confidence < nowPlateTuple.confidence:  # 储存的置信度较低，保存当前的
+        if savedPlate.confidence < nowPlateInfo['confidence']:  # 储存的置信度较低，保存当前的
             # （取巧部分）在高置信度向低置信度进行赋值时。禁止将低频度的前缀赋给高频度的前缀
-            savedPlate.plateStr = safeAssignment(savedPlate.plateStr, nowPlateTuple.str)
+            savedPlate.plateStr = getBetterPlate(savedPlate.plateStr, nowPlateInfo['plateStr'])
             # 剩余的属性进行赋值，并记录更新endTime
             savedPlate.confidence, savedPlate.left, savedPlate.right, savedPlate.top, savedPlate.bottom, \
             savedPlate.width, savedPlate.height, savedPlate.endTime = \
-                nowPlateTuple.confidence, nowPlateTuple.left, nowPlateTuple.right, nowPlateTuple.top, \
-                nowPlateTuple.bottom, nowPlateTuple.width, nowPlateTuple.height, nowTime
-            return nowPlateTuple.str, nowPlateTuple.confidence
+                nowPlateInfo['confidence'], nowPlateInfo['left'], nowPlateInfo['right'], nowPlateInfo['top'], \
+                nowPlateInfo['bottom'], nowPlateInfo['width'], nowPlateInfo['height'], nowTime
+            return nowPlateInfo['plateStr'], nowPlateInfo['confidence']
         else:  # 储存的置信度高，只更新endTime
             savedPlate.endTime = nowTime
             return savedPlate.plateStr, savedPlate.confidence
@@ -317,17 +316,14 @@ class Tractor:
         print('整理数据：大小从 %d ' % (len(self._deadPlates) + len(self._movingPlates)), end='')
         self._mergeSamePlates()
         # 删去概率低于90的普通车牌
-        for i in range(len(self._deadPlates), -1, -1):
+        for i in range(len(self._deadPlates) - 1, -1, -1):
             if self._deadPlates[i].confidence < 0.9 and '厂内' not in self._deadPlates[i].plateStr:
                 del self._deadPlates[i]
-        for i in range(len(self._movingPlates), -1, -1):
-            if self._movingPlates[i].confidence < 0.9 and '厂内' not in self._movingPlates[i].plateStr:
-                del self._movingPlates[i]
         print('到 %d' % (len(self._deadPlates) + len(self._movingPlates)))
-        return self._deadPlates + self._movingPlates
+        return sorted(self._deadPlates + self._movingPlates, key=lambda plate: plate.startTime)
 
     # 下面都是Util
-    def getTupleFromList(self, detectionList: List) -> namedtuple:
+    def getInfoDictFromList(self, detectionList: List) -> dict:
         """
         将识别出的List转换成self.VehiclePlate类型的Tuple
         :param detectionList:
@@ -360,6 +356,28 @@ class Tractor:
                                                1 + distanceMatrix[i - 1][j - 1])
         # print('Edit distance from %s to %s = %d' % (word1, word2, int(distanceMatrix[len(word1)][len(word2)])))
         return int(distanceMatrix[len(word1)][len(word2)])
+
+    def serialization(self, binaryFilename=''):
+        # 只保留数据，缩小文件的大小
+        if not binaryFilename:
+            binaryFilename = time.strftime("%Y%m%d%H%M%S", time.localtime()) + '.tractor'
+        binary = Serialization()
+        binary.append(self._movingPlates)
+        binary.append(self._deadPlates)
+        binary.append(self._lifeTimeLimit)
+        binary.append(self.multiTracker)
+        binary.save(binaryFilename)
+
+    def deserialization(self, binaryFilename: str):
+        binary = Serialization()
+        binary.load(binaryFilename)
+        self._movingPlates = binary.popLoaded()
+        self._deadPlates = binary
+        self._lifeTimeLimit = binary.popLoaded()
+        self.multiTracker = binary.popLoaded()
+
+    def __len__(self):
+        return sizeof(self._movingPlates) + sizeof(self._deadPlates) + len(self.multiTracker)
 
 
 class CvMultiTracker:
@@ -458,6 +476,9 @@ class CvMultiTracker:
         """
         return len(self._trackers)
 
+    def __len__(self):
+        return sizeof(self._trackers) + sizeof(self._lastNewRects) + sizeof(self._lifeTimeLimit)
+
 
 def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     """
@@ -467,18 +488,21 @@ def detect(originImg: np.ndarray, frameIndex=-1) -> np.ndarray:
     :return:
     """
     image = None
-    resultList = model.SimpleRecognizePlateByE2E(originImg,
-                                                 tracker.multiTracker) if args.load_binary is None else binary.popLoaded()
+    # 检测，或使用bin文件进行回忆型检测
+    if args.load_binary is None:
+        resultList = model.SimpleRecognizePlateByE2E(originImg, tracker.multiTracker)
+    else:
+        resultList = binary.popLoaded()
     if args.save_binary is not None:
         binary.append(resultList)
     for plateStr, confidence, rect in resultList:
-        regexMatch厂内车牌 = re.match(r'^.+?(2[1234][01]\d{2,}).*$', plateStr)
-        if regexMatch厂内车牌:  # 一般厂内车牌置信度不高，强行给开绿灯
-            plateStr = '厂内' + regexMatch厂内车牌.group(1)
-            confidence = max(confidence, 0.8500001)
+        # regexMatch厂内车牌 = re.match(r'^.+?(2[1234][01]\d{2,}).*$', plateStr)
+        # if regexMatch厂内车牌:  # 一般厂内车牌置信度不高，强行给开绿灯
+        #     plateStr = '厂内' + regexMatch厂内车牌.group(1)
+        #     confidence = max(confidence, 0.8500001)
         if confidence > 0.85:
             if args.video:
-                vehiclePlate = tracker.getTupleFromList([plateStr, confidence, rect])
+                vehiclePlate = tracker.getInfoDictFromList([plateStr, confidence, rect])
                 plateStr, confidence = tracker.analyzePlate(vehiclePlate, frameIndex)
             if tracker.multiTracker.workingTrackerCount() == 0:
                 image = drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)), (0, 0, 255),
@@ -524,34 +548,33 @@ def demoVideo(showDialog=True):
     :return:
     """
     global tracker
+    # gc_nextTime = time.time() + 60  # 一分钟收集一次
+    inStream, readThread = None, None
+    placeCaptureStream, noSkipStream, recordingStream = None, None, None
     try:
         inStream = VideoUtil.OpenInputVideo(args.video)
         readThread = ReaderThread(inStream, args.video)
         readThread.start()
-        # placeCaptureStream = VideoUtil.OpenOutputVideo(inStream, args.output) if args.output is not None else None
-        placeCaptureStream, noSkipStream, recordingStream = None, None, None
         if args.output:  # 有output才会打开这些输出的流
             if 'd' in args.video_write_mode:  # 只写入没被跳过的检测结果帧
-                placeCaptureStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream) // args.drop)
+                placeCaptureStream = ffmpegUtil.OpenOutputVideo(args.output, VideoUtil.GetFps(inStream) / args.drop)
             if 's' in args.video_write_mode:  # 全程不跳帧，比dynamic多了被跳过的帧
                 insertIdx = args.output.rfind('.')
                 videoName = args.output[:insertIdx] + '.noskip' + args.output[insertIdx:]
-                noSkipStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream) // args.drop)
+                noSkipStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream) / args.drop)
             if 'r' in args.video_write_mode:  # 实时录像，不做任何处理（如果是rtsp就是录像，如果是video就是转码）
                 insertIdx = args.output.rfind('.')
                 videoName = args.output[:insertIdx] + '.record' + args.output[insertIdx:]
-                recordingStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream) // args.drop)
+                recordingStream = ffmpegUtil.OpenOutputVideo(videoName, VideoUtil.GetFps(inStream))
         frameIndex = 0
         frameLimit = VideoUtil.GetVideoFramesCount(inStream) if 'rtsp' not in args.video else 2 ** 31 - 1
-        fps: int = VideoUtil.GetFps(inStream) // args.drop
+        fps: int = VideoUtil.GetFps(inStream)
         if args.load_binary:
             binary.load(args.load_binary)
-        frameLimit = min(frameLimit, 10000)  # 限制最大帧数，只处理视频前多少帧
+        frameLimit = min(frameLimit, 200000)  # 限制最大帧数，只处理视频前多少帧
         tracker = Tractor(fps * 3)  # 每个车牌两秒的寿命
         lastFrame = None
         while True:
-            # 读取一帧
-            # frame = VideoUtil.ReadFrame(inStream)
             try:
                 frame = readThread.get(args.exitTimeout)
                 ffmpegUtil.WriteFrame(recordingStream, frame)
@@ -560,22 +583,12 @@ def demoVideo(showDialog=True):
             except:  # 当30秒取不到任何帧
                 readThread.stop()
                 break
-            # 终止或重新连接
-            # if args.rtsp:
-            #     # 如果rtsp流关闭了，重置流
-            #     if frame.shape[0] == 0:
-            #         VideoUtil.CloseVideos(inStream)
-            #         time.sleep(0.5)
-            #         inStream = VideoUtil.OpenInputVideo(args.video)
-            #         print('Readed rtsp failed! Reseting input stream...')
-            #         continue
             # 终止读取
             if frameIndex > frameLimit:
                 break
-            # else:
-            #     # 如果是视频，终止读取
-            #     if frame.shape[0] == 0 or frameIndex > frameLimit:
-            #         break
+            # if time.time() > gc_nextTime:
+            #     print('Collected garbages:', gc.collect())
+            #     gc_nextTime = time.time() + 600  # 十分钟后再gc
             # 对原始帧的操作
             if showDialog:  # 保证每一帧都imshow过
                 cv2.imshow('Raw frame', frame)
@@ -593,8 +606,11 @@ def demoVideo(showDialog=True):
                 nowpil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 diff = ImageChops.difference(oldpil, nowpil)  # PIL图片库函数
                 # plt.imshow(diff);plt.show()
-                std = np.std(diff)
-                print('{%.3f}<%d> ' % (std, readThread.qsize()), end='')
+                try:
+                    std: float = np.std(diff)
+                    print('{%.3f}<%d> ' % (std, readThread.qsize()), end='')
+                except:
+                    std = 10000
                 if std < 8.9:
                     frameIndex += 1
                     print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
@@ -602,6 +618,7 @@ def demoVideo(showDialog=True):
                     continue
             startTime = time.time()
             lastFrame = frame
+            # <<<<< 核心函数 >>>>>
             frameDrawed = detectShow(frame, frameIndex) if showDialog else detect(frame, frameIndex)
             if frameDrawed.shape[0] == 0:
                 break
@@ -612,40 +629,44 @@ def demoVideo(showDialog=True):
                 traceback.print_exc()
             frameIndex += 1
             print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
-        VideoUtil.CloseVideos(inStream)
-        ffmpegUtil.CloseVideos(placeCaptureStream, noSkipStream, recordingStream)
+        # 写日志
+        if not args.output:
+            return
+        import os
+        with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt',
+                  'a') as fpLog:
+            print('以下是检测到的车牌号：')
+            allResult = tracker.getAll()
+            for resultPlate in allResult:
+                if resultPlate.startTime / fps // 60 < 2:
+                    line = '%s %.3f [%.2f-%.2f秒]' % (
+                        resultPlate.plateStr, resultPlate.confidence, resultPlate.startTime / fps,
+                        resultPlate.endTime / fps)
+                else:
+                    seconds1, seconds2 = resultPlate.startTime / fps, resultPlate.endTime / fps
+                    line = '%s %.3f [%d分%.2f秒 - %d分%.2f秒]' % (
+                        resultPlate.plateStr, resultPlate.confidence, seconds1 // 60, seconds1 % 60, seconds2 // 60,
+                        seconds2 % 60)
+                print(line)
+                fpLog.write(line + '\n')
     except:  # 任何地方报错了不要管
         traceback.print_exc()
+        tracker.serialization()
+        print('检测结果已被保保存')
     finally:
         if showDialog:
             cv2.destroyAllWindows()
-    if args.save_binary is not None:
-        binary.save(args.save_binary)
-    # 写日志
-    if not args.output:
-        return
-    import os
-    with open(os.path.join(os.path.dirname(args.output), os.path.basename(args.output).split('.')[0]) + '.txt',
-              'a') as fpLog:
-        print('以下是检测到的车牌号：')
-        allResult = tracker.getAll()
-        for resultPlate in allResult:
-            if resultPlate.startTime / fps // 60 < 2:
-                line = '%s %.3f [%.2f-%.2f秒]' % (
-                    resultPlate.plateStr, resultPlate.confidence, resultPlate.startTime / fps,
-                    resultPlate.endTime / fps)
-            else:
-                seconds1, seconds2 = resultPlate.startTime / fps, resultPlate.endTime / fps
-                line = '%s %.3f [%d分%.2f秒 - %d分%.2f秒]' % (
-                    resultPlate.plateStr, resultPlate.confidence, seconds1 // 60, seconds1 % 60, seconds2 // 60,
-                    seconds2 % 60)
-            print(line)
-            fpLog.write(line + '\n')
+        if args.save_binary is not None:
+            binary.save(args.save_binary)
+        readThread.stop()
+        VideoUtil.CloseVideos(inStream)
+        ffmpegUtil.CloseVideos(placeCaptureStream, noSkipStream, recordingStream)
 
 
-# 初始化字体
-fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
 if __name__ == '__main__':
+    # 初始化
+    # gc.disable()
+    fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
     model = pr.LPR("model/cascade.xml", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     # model = pr.LPR("model/lpr.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     binary = Serialization()
@@ -665,9 +686,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # 传参
     # args.video = r"C:\Users\william\Desktop\厂内\Record20200326-厂内.mp4"
+    # args.video = r"E:\PycharmProjects\HyperLPR\20200711rtsp_3.record.mp4"
     # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
-    # args.output = '20200711rtsp.mp4'
-    # args.drop = 2
+    # args.output = '20200727rtsp.mp4'
+    # args.drop = 1
     # args.video_write_mode = 'sdr'
     # 检测到时rtsp则赋值进video
     if args.rtsp:

@@ -3,11 +3,10 @@ import numpy as np
 from keras import backend as K
 from keras.models import *
 from keras.layers import *
-from hyperlpr_py3 import typeDistinguish
+import typeDistinguish
 
 # region DNN模块
-from demo import drawRectBox
-from detect_opencv import detect
+from dnn import detect
 # endregion
 chars = [u"京", u"沪", u"津", u"渝", u"冀", u"晋", u"蒙", u"辽", u"吉", u"黑", u"苏", u"浙", u"皖", u"闽", u"赣", u"鲁", u"豫", u"鄂",
          u"湘", u"粤", u"桂",
@@ -188,7 +187,7 @@ class LPR():
             plate, rect = plate
             image_rgb, rect_refine = self.finemappingVertical(plate, rect)
             plateStr, confidence = self.recognizeOne(image_rgb)
-            if confidence > 0.9:
+            if confidence > 0.85:
                 print('(%s)' % self.plateType[typeDistinguish.SimplePredict(plate)], end='')
             res_set.append([plateStr, confidence, rect_refine])
             if confidence > 0.9 and self.multiTracker.isNewRectangle(rect):  # 如果该框置信度>0.9，则启用CSRT替管Cascade
