@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1692</width>
+    <height>879</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>车牌检测系统</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QTableView" name="tableView">
+    <property name="geometry">
+     <rect>
+      <x>1330</x>
+      <y>30</y>
+      <width>351</width>
+      <height>811</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QTabWidget" name="tabControl">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>10</y>
+      <width>1311</width>
+      <height>831</height>
+     </rect>
+    </property>
+    <property name="currentIndex">
+     <number>0</number>
+    </property>
+    <widget class="QWidget" name="tabPageRtsp">
+     <attribute name="title">
+      <string>实时监控</string>
+     </attribute>
+     <widget class="QOpenGLWidget" name="openGLBoxRtsp">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>10</y>
+        <width>1291</width>
+        <height>791</height>
+       </rect>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QWidget" name="tabPageDetection">
+     <attribute name="title">
+      <string>实时监测</string>
+     </attribute>
+     <widget class="QOpenGLWidget" name="openGLBoxDetection">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>10</y>
+        <width>1061</width>
+        <height>791</height>
+       </rect>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menu">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1692</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuStripMain">
+    <property name="title">
+     <string>主菜单</string>
+    </property>
+    <addaction name="toolStripMenuItemStart"/>
+    <addaction name="toolStripMenuItemSetSourceAddress"/>
+    <addaction name="toolStripMenuItemSetOutputFile"/>
+    <addaction name="toolStripMenuItemSetCatchMode"/>
+    <addaction name="toolStripMenuItemSetDropout"/>
+    <addaction name="toolStripMenuItemSetMemory"/>
+    <addaction name="toolStripMenuItemPopWindow"/>
+    <addaction name="toolStripMenuItemAbout"/>
+    <addaction name="toolStripMenuItemExit"/>
+   </widget>
+   <addaction name="menuStripMain"/>
+  </widget>
+  <action name="toolStripMenuItemStart">
+   <property name="text">
+    <string>开始检测</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemSetSourceAddress">
+   <property name="text">
+    <string>设置摄像头地址</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemSetCatchMode">
+   <property name="text">
+    <string>切换抓拍模式</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemSetOutputFile">
+   <property name="text">
+    <string>设置输出文件</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemSetDropout">
+   <property name="text">
+    <string>性能设置</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemSetMemory">
+   <property name="text">
+    <string>设置最大内存限制</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemPopWindow">
+   <property name="text">
+    <string>弹出显示窗口</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemAbout">
+   <property name="text">
+    <string>关于</string>
+   </property>
+  </action>
+  <action name="toolStripMenuItemExit">
+   <property name="text">
+    <string>退出</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

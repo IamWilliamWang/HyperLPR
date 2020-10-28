@@ -1,6 +1,8 @@
+import argparse
 import pickle
 import sys
 import warnings
+from dataclasses import dataclass
 from typing import List
 
 import cv2
@@ -253,33 +255,91 @@ class Serialization:
         return popedElement  # [pointer++]
 
 
-# import av
-#
-# duration = 4
-# fps = 24
-# total_frames = duration * fps
-# container = av.open('test.mp4', mode='w')
-# stream = container.add_stream('mpeg4', rate=fps)
-# stream.width = 480
-# stream.height = 320
-# stream.pix_fmt = 'yuv420p'
-#
-# for frame_i in range(total_frames):
-#     img = np.empty((480, 320, 3))
-#     img[:, :, 0] = 0.5 + 0.5 * np.sin(2 * np.pi * (0 / 3 + frame_i / total_frames))
-#     img[:, :, 1] = 0.5 + 0.5 * np.sin(2 * np.pi * (1 / 3 + frame_i / total_frames))
-#     img[:, :, 2] = 0.5 + 0.5 * np.sin(2 * np.pi * (2 / 3 + frame_i / total_frames))
-#
-#     img = np.round(255 * img).astype(np.uint8)
-#     img = np.clip(img, 0, 255)
-#
-#     frame = av.VideoFrame.from_ndarray(img, format='rgb24')
-#     for packet in stream.encode(frame):
-#         container.mux(packet)
-#
-# #Flush stream
-# for packet in stream.encode():
-#     container.mux(packet)
-#
-# #Close the file
-# container.close()
+def editDistance(word1: str, word2: str) -> int:
+    """
+        计算两个字符串的最小编辑距离
+        :param word1:
+        :param word2:
+        :return:
+        """
+    if '厂内' in word1 and '厂内' in word2:
+        return 0 if word1 == word2 else 2 ** 10
+    rows = len(word1) + 1
+    cols = len(word2) + 1
+    distanceMatrix = np.zeros((rows, cols), dtype=int)
+    for j in range(1, cols):
+        distanceMatrix[0][j] = j
+    for i in range(1, rows):
+        distanceMatrix[i][0] = i
+    for i in range(1, rows):
+        for j in range(1, cols):
+            if word1[i - 1] == word2[j - 1]:
+                distanceMatrix[i][j] = distanceMatrix[i - 1][j - 1]
+            else:
+                distanceMatrix[i][j] = min(1 + distanceMatrix[i - 1][j], 1 + distanceMatrix[i][j - 1],
+                                           1 + distanceMatrix[i - 1][j - 1])
+    # print('Edit distance from %s to %s = %d' % (word1, word2, int(distanceMatrix[len(word1)][len(word2)])))
+    return int(distanceMatrix[len(word1)][len(word2)])
+
+
+@dataclass
+class Plate:
+    """
+    数据类，作为储存车牌的基础单元
+    """
+    plateStr: str  # 车牌号
+    confidence: float  # 置信度
+    left: float  # 车牌框的左侧x坐标
+    right: float  # 车牌框的右侧x坐标
+    top: float  # 车牌框的上侧y坐标
+    bottom: float  # 车牌框的下侧y坐标
+    width: float  # 车牌框的宽度
+    height: float  # 车牌框的高度
+    startTime: int  # 车牌框开始出现的时间
+    endTime: int  # 车牌框完全消失的时间
+
+    def __str__(self) -> str:
+        return "Plate{str='%s', confidence=%f, left=%f, right=%f, top=%f, bottom=%f, width=%f, height=%f, startTime=%d, endTime=%d}" % \
+               (self.plateStr, self.confidence, self.left, self.right, self.top, self.bottom, self.width,
+                self.height, self.startTime, self.endTime)
+
+
+def sec2tuple(seconds) -> tuple:
+    d, h, m, s = 0, 0, 0, seconds
+    if s >= 60:
+        m = s // 60
+        s -= m * 60
+    if m >= 60:
+        h = m // 60
+        m -= h * 60
+    if h >= 24:
+        d = h // 24
+        h -= d * 24
+    return d, h, m, s
+
+
+def sec2str(seconds) -> str:
+    d, h, m, s = sec2tuple(seconds)
+    if d:
+        return '%d日%d时%d分%.2f秒' % (d, h, m, s)
+    if h:
+        return '%d时%d分%.2f秒' % (h, m, s)
+    if m:
+        return '%d分%.2f秒' % (m, s)
+    return '%.2f秒' % s
+
+
+def getArgumentParser():
+    parser = argparse.ArgumentParser(description='车牌识别程序')
+    parser.add_argument('-dir', '--img_dir', type=str, help='要检测的图片文件夹', default=None)
+    parser.add_argument('-v', '--video', type=str, help='想检测的视频文件名', default=None)
+    parser.add_argument('-vwm', '--video_write_mode', type=str,
+                        help='写入模式设置。(d)ynamic：只保留动态帧的检测结果(输出抓拍的视频合集)。(s)tatic：保留所有帧的检测结果。(r)ecord：保留原始录像(仅用于录制rtsp)',
+                        default='d')
+    parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
+    parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
+    parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=4)
+    parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
+    parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
+    parser.add_argument('-memory', '--memory_limit', type=int, help='内存上限限制为多少字节', default=1024 ** 3 * 5)
+    return parser
