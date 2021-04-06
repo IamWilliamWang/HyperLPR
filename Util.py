@@ -338,8 +338,8 @@ def getArgumentParser():
                         default='d')
     parser.add_argument('-rtsp', '--rtsp', type=str, help='使用rtsp地址的视频流进行检测', default=None)
     parser.add_argument('-out', '--output', type=str, help='输出的视频名', default=None)
-    parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=4)
+    parser.add_argument('-drop', '--drop', type=int, help='每隔多少帧保留一帧', default=1)
     parser.add_argument('-save_bin', '--save_binary', type=str, help='每一帧的检测结果保存为什么文件名', default=None)
     parser.add_argument('-load_bin', '--load_binary', type=str, help='加载每一帧的检测结果，不使用video而是用加载的结果进行测试', default=None)
-    parser.add_argument('-memory', '--memory_limit', type=int, help='内存上限限制为多少字节', default=1024 ** 3 * 5)
+    parser.add_argument('-memory', '--memory_limit', type=int, help='内存上限限制为多少字节', default=1024 ** 3 * 1)
     return parser

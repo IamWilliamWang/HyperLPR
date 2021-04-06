@@ -146,12 +146,17 @@ class Ui_MainWindow(QMainWindow):
 
     # region Qt Components Actions
     @pyqtSlot()
+    def demoThreadExited(self):
+        QMessageBox.information(self, '后台程序已结束', '所有帧已处理完毕，如果过早结束请检查地址是否正确')
+
+    @pyqtSlot()
     def toolStripMenuItemLaunchClicked(self):
         def runnable():
             def connectConsoleAndGUI():
                 console.signals.showRawFrameSignal.connect(self.openGLBoxRtsp.paintSlot)
                 console.signals.showDetectionFrameSignal.connect(self.openGLBoxDetection.paintSlot)
                 console.signals.showDataSignal.connect(self.tableView.showDataSlot)
+                console.signals.threadExitSignal.connect(self.demoThreadExited)
                 console.opencvShow = False
 
             import demo
@@ -165,6 +170,7 @@ class Ui_MainWindow(QMainWindow):
             return
         self.demoThread = threading.Thread(target=runnable)
         self.demoThread.start()
+        QMessageBox.information(self, '正在启动后台', '正在启动后台，需要等待大约10秒')
         self.toolStripMenuItemSetSourceAddress.setVisible(False)
         self.toolStripMenuItemSetOutputFile.setVisible(False)
         self.toolStripMenuItemSetCatchMode.setVisible(False)
@@ -316,7 +322,7 @@ class Ui_MainWindow(QMainWindow):
         self.tabPageDetection = QtWidgets.QWidget()
         self.tabPageDetection.setObjectName("tabPageDetection")
         self.openGLBoxDetection = GLWidget(self.tabPageDetection)
-        self.openGLBoxDetection.setGeometry(QtCore.QRect(10, 10, (0.763*screenWidth), int(0.9*screenHeight)))
+        self.openGLBoxDetection.setGeometry(QtCore.QRect(int(0.00591*screenWidth), int(0.01138*screenHeight), (0.7630*screenWidth), int(0.8998*screenHeight)))
         self.openGLBoxDetection.setObjectName("openGLBoxDetection")
         self.tabControl.addTab(self.tabPageDetection, "")
         self.setCentralWidget(self.centralwidget)
@@ -380,7 +386,6 @@ class Ui_MainWindow(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     args = getArgumentParser().parse_args()
-    # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
     mainWindow = Ui_MainWindow(args)  # 没有初始化不用传参数
     mainWindow.show()
     sys.exit(app.exec_())

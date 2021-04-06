@@ -415,6 +415,7 @@ class Signals(QObject):
     showRawFrameSignal = pyqtSignal(np.ndarray)
     showDetectionFrameSignal = pyqtSignal(np.ndarray)
     showDataSignal = pyqtSignal(list)
+    threadExitSignal = pyqtSignal()
 
 
 class Main:
@@ -477,7 +478,7 @@ class Main:
                     self.tracker.multiTracker.reborn(0)
                 else:
                     image = self.drawRectBox(originImg, rect, plateStr + " " + str(round(confidence, 3)), (0, 0, 255),
-                                             (255,255, 255))
+                                             (255, 255, 255))
                 print("%s (%.5f)" % (plateStr, confidence))
             break  # 每帧只处理最有可能的车牌号
         return (image, True) if image is not None else (originImg, False)
@@ -575,6 +576,8 @@ class Main:
                 if args.drop != 1:  # imshow完了再跳过
                     if frameIndex % args.drop != 0:
                         frameIndex += 1
+                        if args.load_binary:  # 如果有保存的检测则跳过一帧结果（假设bin保存的是每一帧的结果）
+                            self.binary.popLoaded()
                         continue
                 # 开始处理原始帧
                 height, width, channel = frame.shape
@@ -591,7 +594,7 @@ class Main:
                         std = 10000
                     if std < 9:
                         frameIndex += 1
-                        print('\t已处理 %d / %d帧' % (frameIndex, frameLimit))
+                        print('\t已处理 %d 帧' % frameIndex)
                         ffmpegUtil.WriteFrame(noSkipStream, frame)
                         continue
                 startTime = time.time()
@@ -607,7 +610,7 @@ class Main:
                 except ValueError as e:
                     traceback.print_exc()
                 frameIndex += 1
-                print('\t已处理 %d / %d帧 (用时%f s)' % (frameIndex, frameLimit, time.time() - startTime))
+                print('\t已处理 %d (用时%f s)' % (frameIndex, time.time() - startTime))
             readThread.stop()
             self.running = False
             # 写日志
@@ -636,7 +639,7 @@ class Main:
             VideoUtil.CloseVideos(inStream)
             ffmpegUtil.CloseVideos(placeCaptureStream, noSkipStream, recordingStream)
 
-    def start(self, argspace: argparse.Namespace):
+    def start(self, argspace: argparse.Namespace, **kwargs):
         global args
         args = argspace
         # 检测到时rtsp则赋值进video
@@ -646,7 +649,7 @@ class Main:
         # 开始执行总程序
         globalStartTime = time.time()
         if argspace.img_dir is None:
-            self.demoVideo()
+            self.demoVideo(**kwargs)
         else:
             self.demoPhotos()
         # 统计执行的时长
@@ -658,18 +661,17 @@ class Main:
             globalTimeHours, globalTimeMinutes, globalTimeSeconds) if globalTimeHours != 0 else '%d分%.3f秒' % (
             globalTimeMinutes, globalTimeSeconds)
         print('总用时：' + globalTime)
+        self.signals.threadExitSignal.emit()
 
     # 初始化
     fontC = ImageFont.truetype("./Font/platech.ttf", 14, 0)
     model = pr.LPR("./model/cascade.xml", "./model/model12.h5", "./model/ocr_plate_all_gru.h5")
-    # model = pr.LPR("model/mssd512_voc.caffemodel", "model/model12.h5", "model/ocr_plate_all_gru.h5")
     binary = Serialization()
     tracker = Tractor(1)  # 设为1，意为禁用追踪功能
 
 
 if __name__ == '__main__':
     args = getArgumentParser().parse_args()
-    # args.rtsp = "rtsp://admin:klkj6021@172.19.13.27"
     main = Main.getInstance()
     main.start(args)
     # python -m cProfile -s cumulative demo.py >> profile.log
